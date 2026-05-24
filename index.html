@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ReadTaylor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" data-theme="paper">
+      <aside class="library-panel" aria-label="书库">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">RT</div>
+          <div>
+            <h1>ReadTaylor</h1>
+            <p>本地小说阅读器</p>
+          </div>
+        </div>
+
+        <section class="import-box" aria-label="导入书籍">
+          <label class="format-select">
+            <span>导入格式</span>
+            <select id="book-format">
+              <option value="auto">自动识别</option>
+              <option value="txt">TXT 纯文本</option>
+              <option value="epub">EPUB 电子书</option>
+              <option value="mobi">MOBI Kindle</option>
+              <option value="azw3">AZW3 Kindle</option>
+              <option value="pdf">PDF 固定排版</option>
+            </select>
+          </label>
+          <label class="import-button" for="book-file">
+            <span aria-hidden="true">+</span>
+            <span>导入书籍</span>
+          </label>
+          <input id="book-file" type="file" accept=".txt,text/plain,.epub,application/epub+zip,.mobi,.azw3,.pdf,application/pdf" />
+          <p id="import-status" class="import-status">支持 TXT、EPUB、PDF；MOBI/AZW3 会提示转换建议。</p>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-title">
+            <span>当前书籍</span>
+            <button id="clear-book" class="ghost-button" type="button">清空</button>
+          </div>
+          <div id="book-card" class="book-card empty">
+            <div class="book-cover" aria-hidden="true">
+              <span>读</span>
+            </div>
+            <div>
+              <strong id="book-title">还没有导入书</strong>
+            <p id="book-meta">选择书籍格式并导入文件</p>
+            </div>
+          </div>
+        </section>
+
+      </aside>
+
+      <main class="reader-shell">
+        <header class="reader-toolbar" aria-label="阅读工具栏">
+          <div class="reader-status">
+            <strong id="reading-percent">0%</strong>
+          </div>
+          <div class="toolbar-actions">
+            <button id="immersive-toggle" class="tool-button" type="button">沉浸</button>
+            <button id="translate-toggle" class="tool-button" type="button">翻译</button>
+            <button id="bookmark-button" class="tool-button" type="button">书签</button>
+            <!-- 折叠/展开底部设置栏 -->
+            <button id="settings-toggle" class="tool-button" type="button" aria-expanded="false" aria-controls="reading-controls">设置</button>
+          </div>
+        </header>
+
+        <article id="reader" class="reader" tabindex="0" aria-label="小说正文">
+          <section class="empty-state">
+            <div class="empty-art" aria-hidden="true">
+              <div></div>
+              <span></span>
+            </div>
+            <h2>导入一本电子书</h2>
+            <p>支持 TXT、EPUB 和 PDF 阅读；导入前可以手动选择格式，也可以让网站按文件后缀自动识别。</p>
+            <label class="inline-import" for="book-file">选择文件</label>
+          </section>
+        </article>
+
+        <section id="translator-panel" class="translator-panel" aria-label="翻译设置" hidden>
+          <div class="translator-head">
+            <div>
+              <span>当前翻译模型</span>
+              <strong id="translator-current">未配置</strong>
+            </div>
+            <button id="translator-close" class="ghost-button" type="button">关闭</button>
+          </div>
+
+          <div class="translator-tabs" role="tablist" aria-label="翻译服务">
+            <button id="provider-free" class="translator-tab active" type="button">免费翻译</button>
+            <button id="provider-google" class="translator-tab" type="button">谷歌 API</button>
+            <button id="provider-model" class="translator-tab" type="button">模型翻译</button>
+          </div>
+
+          <div class="translator-form">
+            <label id="translate-api-key-row">
+              <span>API Key</span>
+              <input id="translate-api-key" type="password" autocomplete="off" placeholder="填入你自己的密钥" />
+            </label>
+
+            <label id="translate-endpoint-row">
+              <span>Base URL</span>
+              <input id="translate-endpoint" type="url" placeholder="https://api.catcode.top" />
+            </label>
+
+            <label id="translate-model-row">
+              <span>模型名称</span>
+              <input id="translate-model" type="text" placeholder="例如 deepseek-chat" />
+            </label>
+
+            <div id="model-presets" class="model-presets" aria-label="推荐模型">
+              <button type="button" data-endpoint="https://api.deepseek.com/v1/chat/completions" data-model="deepseek-chat">
+                <span>DeepSeek</span>
+                <small>OpenAI 兼容</small>
+              </button>
+              <button type="button" data-endpoint="https://openrouter.ai/api/v1/chat/completions" data-model="google/gemini-flash-1.5">
+                <span>Gemini Flash</span>
+                <small>OpenRouter</small>
+              </button>
+              <button type="button" data-endpoint="https://api.openai.com/v1/chat/completions" data-model="gpt-4o-mini">
+                <span>GPT mini</span>
+                <small>OpenAI</small>
+              </button>
+              <button type="button" data-endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions" data-model="qwen-plus">
+                <span>Qwen Plus</span>
+                <small>通义千问</small>
+              </button>
+            </div>
+
+            <div class="translator-grid">
+              <label>
+                <span>源语言</span>
+                <select id="translate-source">
+                  <option value="auto">自动检测</option>
+                  <option value="zh-CN">中文</option>
+                  <option value="en">英语</option>
+                  <option value="ja">日语</option>
+                  <option value="ko">韩语</option>
+                </select>
+              </label>
+              <label>
+                <span>目标语言</span>
+                <select id="translate-target">
+                  <option value="zh-CN">中文</option>
+                  <option value="en">English</option>
+                  <option value="ja">日本語</option>
+                  <option value="ko">한국어</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="translator-grid">
+              <label>
+                <span>显示方式</span>
+                <select id="translate-view">
+                  <option value="original">原文</option>
+                  <option value="translated">译文</option>
+                  <option value="bilingual">双语</option>
+                  <option value="parallel">双栏对照</option>
+                </select>
+              </label>
+              <label>
+                <span>分段长度</span>
+                <select id="translate-chunk-size">
+                  <option value="1800">短段</option>
+                  <option value="3000">标准</option>
+                  <option value="4500">长段</option>
+                </select>
+              </label>
+            </div>
+
+            <label class="toggle-row">
+              <span>翻译模式</span>
+              <input id="parallel-translate-mode" type="checkbox" />
+            </label>
+
+            <div class="translator-actions">
+              <button id="translate-chapter" class="primary-button" type="button">翻译可见内容</button>
+              <button id="swap-translation-columns" class="tool-button" type="button">左右调换</button>
+              <button id="clear-translation" class="tool-button" type="button">清除译文</button>
+            </div>
+            <p id="translator-status" class="translator-status">双栏对照使用 OpenAI 兼容接口，Base URL 可预填，API Key 需自行填写；句级译文缓存到本地 IndexedDB。</p>
+          </div>
+        </section>
+
+        <footer id="reading-controls" class="reading-controls" aria-label="阅读设置">
+          <div class="control-group">
+            <button id="theme-paper" class="segmented active" type="button">纸张</button>
+            <button id="theme-night" class="segmented" type="button">夜间</button>
+            <button id="theme-mist" class="segmented" type="button">清爽</button>
+          </div>
+          <label class="range-control">
+            <span>字号</span>
+            <input id="font-size" type="range" min="16" max="28" value="20" />
+          </label>
+          <label class="range-control">
+            <span>行距</span>
+            <input id="line-height" type="range" min="1.55" max="2.2" step="0.05" value="1.8" />
+          </label>
+          <button id="restore-bookmark" class="tool-button" type="button">回到书签</button>
+        </footer>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
