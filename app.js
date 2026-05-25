@@ -2661,21 +2661,56 @@ function addBookmark() {
 let currentMarkContextMenu = null;
 let markContextMenuOutsideHandler = null;
 
+// 缓存"最近一次的非空选区文字+端点节点"。Chrome 在选区外右键时会把选区折叠，
+// 等到 contextmenu 事件触发时 window.getSelection() 已经是空的，
+// 用缓存兜底才能可靠地拿到用户刚刚选中的那段文字。
+let lastNonEmptySelection = null;
+document.addEventListener("selectionchange", () => {
+  const selection = document.getSelection?.();
+  if (!selection || selection.isCollapsed) return;
+  const text = String(selection).trim();
+  if (!text) return;
+  lastNonEmptySelection = {
+    text,
+    anchorNode: selection.anchorNode,
+    focusNode: selection.focusNode,
+    capturedAt: Date.now(),
+  };
+});
+
 function handleReaderContextMenu(event) {
   // 没书时让浏览器原生菜单走，避免空菜单干扰
   if (!state.book?.id || !virtualBook.blocks.length) return;
   event.preventDefault();
 
   const selection = window.getSelection?.();
-  const hasSelection = Boolean(selection && !selection.isCollapsed && String(selection).trim());
-  const selectedText = hasSelection ? String(selection).trim() : "";
+  const liveText = selection && !selection.isCollapsed ? String(selection).trim() : "";
+
+  // 优先用 live 选区；live 没了就回落到 1 秒内的缓存（应付右键自动折叠选区的情况）
+  const cachedFresh =
+    lastNonEmptySelection && Date.now() - lastNonEmptySelection.capturedAt < 1000
+      ? lastNonEmptySelection
+      : null;
+  const selectedText = liveText || cachedFresh?.text || "";
+  const hasSelection = Boolean(selectedText);
 
   // 选区落点优先：选了字就用选区所在 block，没选就用当前滚动位置
-  const blockInfo = hasSelection
-    ? findBlockFromSelection(selection) || getCurrentBlockInfo()
-    : getCurrentBlockInfo();
+  let blockInfo = null;
+  if (liveText) {
+    blockInfo = findBlockFromSelection(selection);
+  } else if (cachedFresh) {
+    blockInfo = findBlockFromCachedNode(cachedFresh.anchorNode || cachedFresh.focusNode);
+  }
+  if (!blockInfo) blockInfo = getCurrentBlockInfo();
 
-  openMarkContextMenu(event.clientX, event.clientY, blockInfo, selectedText);
+  openMarkContextMenu(event.clientX, event.clientY, blockInfo, hasSelection ? selectedText : "");
+}
+
+// findBlockFromSelection 的缓存版本：直接从一个 Node 找它所在的虚拟 block
+function findBlockFromCachedNode(node) {
+  if (!node) return null;
+  const fakeSelection = { anchorNode: node, focusNode: node };
+  return findBlockFromSelection(fakeSelection);
 }
 
 function openMarkContextMenu(clientX, clientY, blockInfo, selectedText) {
