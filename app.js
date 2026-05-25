@@ -2573,6 +2573,98 @@ function openLookupPopup(word, anchorRect) {
     closeLookupPopup();
   };
   document.addEventListener("mousedown", lookupOutsideClickHandler);
+
+  // 真正发请求填内容。用 popup 引用做"还是不是当前弹窗"的判断，
+  // 防止用户连续选词时旧请求的结果覆盖新弹窗。
+  fetchLookupResult(word)
+    .then((result) => {
+      if (currentLookupPopup !== popup) return;
+      renderLookupBody(body, result);
+      // 内容变化后重新定位，避免被挤出视口
+      positionLookupPopup(popup, anchorRect);
+    })
+    .catch((error) => {
+      if (currentLookupPopup !== popup) return;
+      body.textContent = error?.message || "查询失败";
+      positionLookupPopup(popup, anchorRect);
+    });
+}
+
+// 同时调中→英翻译和英文词典释义，谁返回就用谁，两个都失败才算失败
+async function fetchLookupResult(word) {
+  const [translationResult, dictResult] = await Promise.allSettled([
+    translateWithMyMemory(word, word),
+    fetchDictionaryEntry(word),
+  ]);
+
+  const translation = translationResult.status === "fulfilled" ? translationResult.value : "";
+  const entry = dictResult.status === "fulfilled" ? dictResult.value : null;
+
+  if (!translation && !entry) {
+    const reason =
+      translationResult.status === "rejected"
+        ? translationResult.reason?.message
+        : dictResult.reason?.message;
+    throw new Error(reason || "未找到这个词的释义。");
+  }
+
+  return { translation, entry };
+}
+
+// dictionaryapi.dev：免费、免 key、支持 CORS。单词找不到时返回 404，这里把 404 当作"没释义"处理
+async function fetchDictionaryEntry(word) {
+  const cleaned = word.trim().toLowerCase();
+  if (!cleaned || cleaned.includes(" ")) return null; // 多词短语词典通常没有，跳过
+  const url = `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleaned)}`;
+  const response = await fetch(url);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`词典服务返回 ${response.status}`);
+  const data = await response.json();
+  return Array.isArray(data) ? data[0] : null;
+}
+
+function renderLookupBody(body, { translation, entry }) {
+  body.replaceChildren();
+
+  if (translation) {
+    const transLine = document.createElement("div");
+    transLine.className = "lookup-translation";
+    transLine.textContent = translation;
+    body.append(transLine);
+  }
+
+  // 词典释义按词性分组，每个词性最多取 2 条
+  const meanings = Array.isArray(entry?.meanings) ? entry.meanings.slice(0, 3) : [];
+  meanings.forEach((meaning) => {
+    const group = document.createElement("div");
+    group.className = "lookup-meaning";
+
+    if (meaning.partOfSpeech) {
+      const pos = document.createElement("span");
+      pos.className = "lookup-pos";
+      pos.textContent = meaning.partOfSpeech;
+      group.append(pos);
+    }
+
+    const defs = (meaning.definitions || []).slice(0, 2);
+    defs.forEach((def) => {
+      const line = document.createElement("div");
+      line.className = "lookup-def";
+      line.textContent = def.definition || "";
+      group.append(line);
+    });
+
+    body.append(group);
+  });
+
+  // 音标（如果词典提供了的话）放在标题旁边的小字
+  const phoneticText = entry?.phonetic || entry?.phonetics?.find((p) => p?.text)?.text;
+  if (phoneticText) {
+    const phon = document.createElement("div");
+    phon.className = "lookup-phonetic";
+    phon.textContent = phoneticText;
+    body.prepend(phon);
+  }
 }
 
 function closeLookupPopup() {

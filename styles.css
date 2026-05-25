@@ -900,6 +900,44 @@ button {
 
 .lookup-popup .lookup-body {
   color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lookup-popup .lookup-phonetic {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.lookup-popup .lookup-translation {
+  color: var(--reader-ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.lookup-popup .lookup-meaning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.lookup-popup .lookup-pos {
+  align-self: flex-start;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.lookup-popup .lookup-def {
+  color: var(--reader-ink);
+  font-size: 13px;
 }
 
 .empty-state {
