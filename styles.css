@@ -648,6 +648,11 @@ button {
   overflow: hidden;
 }
 
+/* hidden 属性必须强于 display: flex，否则 JS 里的 dom.marksPanel.hidden = true 不生效 */
+.marks-panel[hidden] {
+  display: none;
+}
+
 .marks-head {
   display: flex;
   align-items: center;
