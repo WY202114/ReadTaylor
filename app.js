@@ -28,7 +28,6 @@ const dom = {
   translatorStatus: document.querySelector("#translator-status"),
   translateChapter: document.querySelector("#translate-chapter"),
   clearTranslation: document.querySelector("#clear-translation"),
-  translatorSettings: document.querySelector("#translator-settings"),
   swapTranslationColumns: document.querySelector("#swap-translation-columns"),
   translateApiKeyRow: document.querySelector("#translate-api-key-row"),
   translateApiKey: document.querySelector("#translate-api-key"),
@@ -136,10 +135,13 @@ function bindEvents() {
   dom.restoreBookmark.addEventListener("click", restoreBookmark);
   dom.settingsToggle.addEventListener("click", toggleReadingControls);
   if (dom.sidebarToggle) dom.sidebarToggle.addEventListener("click", toggleSidebar);
-  // "翻译" 按钮本身是开关：一次点击即可开启/关闭翻译
-  dom.translateToggle.addEventListener("click", toggleParallelTranslation);
-  // 翻译设置面板由旁边的 "⋯" 按钮单独控制
-  dom.translatorSettings.addEventListener("click", toggleTranslatorPanel);
+  // "翻译" 按钮：左键 = 一键开关；右键 / 长按 = 打开翻译设置面板
+  dom.translateToggle.addEventListener("click", handleTranslateToggleClick);
+  dom.translateToggle.addEventListener("contextmenu", handleTranslateToggleContextMenu);
+  dom.translateToggle.addEventListener("pointerdown", handleTranslateTogglePointerDown);
+  dom.translateToggle.addEventListener("pointerup", cancelTranslateToggleLongPress);
+  dom.translateToggle.addEventListener("pointercancel", cancelTranslateToggleLongPress);
+  dom.translateToggle.addEventListener("pointerleave", cancelTranslateToggleLongPress);
   dom.translatorClose.addEventListener("click", closeTranslatorPanel);
   dom.translateChapter.addEventListener("click", translateCurrentChapter);
   dom.clearTranslation.addEventListener("click", clearCurrentTranslation);
@@ -1492,6 +1494,39 @@ function closeTranslatorPanel() {
   saveState();
 }
 
+// "翻译" 按钮的左键 / 右键 / 长按：左键开关，右键和长按都打开设置面板。
+// 长按通过 pointerdown 起一个定时器，到时间没抬起就算长按；长按触发后要把紧跟的
+// click 吞掉，避免"打开面板"的同时又触发"开关翻译"。
+const TRANSLATE_TOGGLE_LONG_PRESS_MS = 500;
+let translateToggleLongPressTimer = 0;
+let translateToggleLongPressTriggered = false;
+
+function handleTranslateToggleClick() {
+  if (translateToggleLongPressTriggered) {
+    translateToggleLongPressTriggered = false;
+    return;
+  }
+  toggleParallelTranslation();
+}
+
+function handleTranslateToggleContextMenu(event) {
+  event.preventDefault();
+  toggleTranslatorPanel();
+}
+
+function handleTranslateTogglePointerDown() {
+  translateToggleLongPressTriggered = false;
+  window.clearTimeout(translateToggleLongPressTimer);
+  translateToggleLongPressTimer = window.setTimeout(() => {
+    translateToggleLongPressTriggered = true;
+    toggleTranslatorPanel();
+  }, TRANSLATE_TOGGLE_LONG_PRESS_MS);
+}
+
+function cancelTranslateToggleLongPress() {
+  window.clearTimeout(translateToggleLongPressTimer);
+}
+
 // 顶部 "翻译" 按钮的一键开关：
 //   关 → 开：切到双栏模式，hydrate 时会自动把可见句对加入翻译队列；
 //   开 → 关：恢复原文视图、清空待翻译队列、释放高亮状态。
@@ -1585,9 +1620,8 @@ function applyTranslatorSettings() {
   const translator = state.translator;
   const providerLabel = getTranslatorProviderLabel();
   dom.translatorPanel.hidden = !translator.panelOpen;
-  // "翻译" 按钮高亮 = 翻译已开启；"⋯" 按钮高亮 = 设置面板已打开
+  // "翻译" 按钮高亮 = 翻译已开启（设置面板的打开状态不再单独反映在工具栏上）
   dom.translateToggle.classList.toggle("active", isParallelTranslationEnabled());
-  dom.translatorSettings.classList.toggle("active", translator.panelOpen);
   dom.translatorCurrent.textContent = providerLabel;
   dom.translateApiKey.value = translator.apiKey || "";
   dom.translateEndpoint.value = translator.endpoint || "";
