@@ -122,13 +122,19 @@ let focusedSentenceKey = null;
 //   "original"   —— 用户的点击/选中发生在译文栏，要高亮的是原文栏；
 //   "translated" —— 反过来
 let focusedSentenceSide = null;
+let eventsBound = false;
 
 init();
 
 function init() {
-  applySettings();
-  renderAll();
   bindEvents();
+  try {
+    applySettings();
+    renderAll();
+  } catch (error) {
+    console.error("ReadTaylor 初始化失败：", error);
+    recoverFromRenderError();
+  }
   // 重开 tab 时按 bookId 恢复进度（优先 blockIndex，scrollTop 兜底）。
   // 主 state 里也保留了 scrollTop，但 rt_progress 是跨"清空主 state / 再导入"的稳定源。
   if (state.book?.id && state.chapters.length) {
@@ -141,6 +147,8 @@ function init() {
 }
 
 function bindEvents() {
+  if (eventsBound) return;
+  eventsBound = true;
   dom.fileInput.addEventListener("change", handleFileImport);
   dom.bookFormat.addEventListener("change", (event) => {
     state.importFormat = event.target.value;
@@ -613,11 +621,44 @@ function renderReader() {
   }
 
   virtualBook = buildVirtualBook();
+  if (!virtualBook.blocks.length && isParallelTranslationEnabled()) {
+    state.translator.parallelMode = false;
+    state.translator.view = "original";
+    virtualBook = buildVirtualBook();
+  }
   dom.reader.replaceChildren(createVirtualReaderShell());
   virtualBook.renderedRange = [-1, -1];
   restoreScroll(state.scrollTop || state.scrollByChapter[state.currentChapterIndex] || 0);
   renderVirtualWindow();
   updateCurrentChapterFromScroll();
+}
+
+function recoverFromRenderError() {
+  state.immersive = false;
+  state.translator.panelOpen = false;
+  state.translator.parallelMode = false;
+  state.translator.view = "original";
+  virtualBook = createEmptyVirtualBook();
+
+  try {
+    applySettings();
+    renderBook();
+    renderReader();
+    applyTranslatorSettings();
+    updateButtons();
+    updateProgress();
+    saveState();
+  } catch (error) {
+    console.error("ReadTaylor 恢复渲染失败：", error);
+    dom.reader.innerHTML = `
+      <section class="empty-state">
+        <div class="empty-art" aria-hidden="true"><div></div><span></span></div>
+        <h2>页面状态需要刷新</h2>
+        <p>已保留导入按钮和设置按钮，请重新导入或刷新页面。</p>
+        <label class="inline-import" for="book-file">选择文件</label>
+      </section>
+    `;
+  }
 }
 
 function createParagraph(text, kind) {
@@ -1092,7 +1133,11 @@ function renderVirtualWindow() {
   const startIndex = findBlockIndexAt(startY);
   const endIndex = Math.min(virtualBook.blocks.length - 1, findBlockIndexAt(endY) + 1);
 
-  if (virtualBook.renderedRange[0] === startIndex && virtualBook.renderedRange[1] === endIndex) {
+  if (
+    virtualBook.renderedRange[0] === startIndex &&
+    virtualBook.renderedRange[1] === endIndex &&
+    windowNode.childElementCount > 0
+  ) {
     return;
   }
 
