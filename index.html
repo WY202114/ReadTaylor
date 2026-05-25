@@ -8,7 +8,7 @@
   </head>
   <body>
     <div class="app-shell" data-theme="paper">
-      <aside class="library-panel" aria-label="书库">
+      <aside id="library-panel" class="library-panel" aria-label="书库">
         <div class="brand">
           <div class="brand-mark" aria-hidden="true">RT</div>
           <div>
@@ -58,6 +58,7 @@
       <main class="reader-shell">
         <header class="reader-toolbar" aria-label="阅读工具栏">
           <div class="reader-status">
+            <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="展开书库" aria-expanded="true" aria-controls="library-panel"></button>
             <strong id="reading-percent">0%</strong>
           </div>
           <div class="toolbar-actions">

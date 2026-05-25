@@ -1,5 +1,7 @@
 const STORAGE_KEY = "readTaylorState";
 const EPUB_JS_URL = "https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js";
+// EPUB 本质是 zip 包，epub.js 解析时依赖 JSZip，必须先加载
+const JSZIP_URL = "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
 const PDF_JS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
 const PDF_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 const GOOGLE_TRANSLATE_ENDPOINT = "https://translation.googleapis.com/language/translate/v2";
@@ -47,6 +49,7 @@ const dom = {
   bookmarkButton: document.querySelector("#bookmark-button"),
   restoreBookmark: document.querySelector("#restore-bookmark"),
   settingsToggle: document.querySelector("#settings-toggle"),
+  sidebarToggle: document.querySelector("#sidebar-toggle"),
   fontSize: document.querySelector("#font-size"),
   lineHeight: document.querySelector("#line-height"),
   themeButtons: {
@@ -87,6 +90,8 @@ const defaultState = {
     controlsOpen: false,
     // 双栏翻译模式左栏宽度占比（0.2 ~ 0.8）
     parallelRatio: 0.5,
+    // 左侧书库栏是否展开：无书时强制展开；有书时默认收起，给正文让位
+    sidebarOpen: true,
   },
 };
 
@@ -103,6 +108,13 @@ let isSentenceTranslationQueueRunning = false;
 const TRANSLATION_REQUEST_DELAY_MIN = 1000;
 const TRANSLATION_REQUEST_DELAY_MAX = 2000;
 const RATE_LIMIT_RETRY_LIMIT = 3;
+
+// 当前在双栏翻译模式下被选中高亮的句对 cacheKey；null 表示无高亮
+let focusedSentenceKey = null;
+// 需要高亮的"对侧"栏：
+//   "original"   —— 用户的点击/选中发生在译文栏，要高亮的是原文栏；
+//   "translated" —— 反过来
+let focusedSentenceSide = null;
 
 init();
 
@@ -123,6 +135,7 @@ function bindEvents() {
   dom.bookmarkButton.addEventListener("click", saveBookmark);
   dom.restoreBookmark.addEventListener("click", restoreBookmark);
   dom.settingsToggle.addEventListener("click", toggleReadingControls);
+  if (dom.sidebarToggle) dom.sidebarToggle.addEventListener("click", toggleSidebar);
   dom.translateToggle.addEventListener("click", toggleTranslatorPanel);
   dom.translatorClose.addEventListener("click", closeTranslatorPanel);
   dom.translateChapter.addEventListener("click", translateCurrentChapter);
@@ -132,6 +145,11 @@ function bindEvents() {
   );
   dom.swapTranslationColumns.addEventListener("click", swapTranslationColumns);
   dom.reader.addEventListener("scroll", handleReaderScroll, { passive: true });
+  // 双栏翻译模式下：点击任一侧 → 高亮对侧；拖选文本 → 同样高亮对侧
+  dom.reader.addEventListener("click", handleSentencePairFocus);
+  dom.reader.addEventListener("mouseup", handleSelectionFocus);
+  // 选中正文中的纯英文 → 在选区附近弹出查词弹窗
+  dom.reader.addEventListener("mouseup", handleLookupSelection);
   dom.fontSize.addEventListener("input", (event) => updateSetting("fontSize", Number(event.target.value)));
   dom.lineHeight.addEventListener("input", (event) => updateSetting("lineHeight", Number(event.target.value)));
   dom.translateApiKey.addEventListener("input", (event) => updateTranslator("apiKey", event.target.value.trim()));
@@ -181,6 +199,8 @@ async function handleFileImport(event) {
       scrollByChapter: {},
       bookmark: null,
       translations: {},
+      // 导入成功后自动收起书库栏，把空间让给正文
+      settings: { ...state.settings, sidebarOpen: false },
     };
     saveState();
     renderAll();
@@ -229,41 +249,57 @@ async function parseBookFile(file, format) {
 }
 
 async function parseEpubFile(file) {
+  // 必须先加载 JSZip，否则 epub.js 会抛 "JSZip lib not loaded"
+  await loadScript(JSZIP_URL, "JSZip");
   await loadScript(EPUB_JS_URL, "ePub");
 
   const book = window.ePub(await file.arrayBuffer());
   const metadata = await book.loaded.metadata.catch(() => ({}));
   await book.ready;
 
+  // 尝试用 NCX/Nav 拿到友好的章节标题（按 href 映射）
+  const navTitleByHref = await loadEpubNavTitles(book);
+
   const spineItems = book.spine?.spineItems || [];
   const chapters = [];
+  const errors = [];
 
-  for (const item of spineItems) {
-    const section = book.spine.get(item.index ?? item.href ?? item.idref);
-    if (!section) continue;
-
+  for (let i = 0; i < spineItems.length; i += 1) {
+    const item = spineItems[i];
+    const href = item.href || item.url || "";
     try {
-      const doc = await section.load(book.load.bind(book));
-      const title = getEpubSectionTitle(doc) || section.label || item.href || `第 ${chapters.length + 1} 节`;
-      const text = normalizeText(getDocumentText(doc));
-
-      if (text) {
-        chapters.push({
-          title: title.trim(),
-          text,
-          wordCount: countReadableChars(text),
-        });
+      // 用 book.load(href) 拿 Document，比 section.load(...) 兼容性更好
+      const doc = await book.load(href);
+      if (!doc || typeof doc.querySelector !== "function") {
+        continue;
       }
+      const text = normalizeText(getDocumentText(doc));
+      if (!text) continue;
 
-      section.unload?.();
-    } catch {
-      // Skip unreadable spine items such as covers or navigation files.
+      const title =
+        navTitleByHref.get(stripHash(href)) ||
+        getEpubSectionTitle(doc) ||
+        item.label ||
+        href ||
+        `第 ${chapters.length + 1} 节`;
+
+      chapters.push({
+        title: String(title).trim(),
+        text,
+        wordCount: countReadableChars(text),
+      });
+    } catch (error) {
+      errors.push({ href, error });
     }
   }
 
   book.destroy?.();
 
   if (!chapters.length) {
+    // 把每个失败的具体错误打到控制台，方便排查（比如 DRM、加密、路径解析）
+    if (errors.length) {
+      console.warn("EPUB 解析失败的小节：", errors);
+    }
     throw new Error("没有从 EPUB 中读取到正文内容。");
   }
 
@@ -271,6 +307,30 @@ async function parseEpubFile(file) {
     title: metadata?.title || file.name.replace(/\.[^.]+$/, ""),
     chapters,
   };
+}
+
+// 从 EPUB 的目录（nav 或 ncx）中收集 href → 标题 的映射
+async function loadEpubNavTitles(book) {
+  const map = new Map();
+  try {
+    const nav = await book.loaded.navigation;
+    const toc = nav?.toc || [];
+    const walk = (items) => {
+      items.forEach((entry) => {
+        if (entry?.href) map.set(stripHash(entry.href), entry.label || "");
+        if (Array.isArray(entry?.subitems) && entry.subitems.length) walk(entry.subitems);
+      });
+    };
+    walk(toc);
+  } catch {
+    // 目录读取失败不影响正文，忽略
+  }
+  return map;
+}
+
+// EPUB href 经常带 #fragment，做章节标题映射时要去掉
+function stripHash(href) {
+  return String(href || "").split("#")[0];
 }
 
 async function parsePdfFile(file) {
@@ -320,8 +380,27 @@ function getEpubSectionTitle(doc) {
 
 function getDocumentText(doc) {
   const body = doc.body || doc.documentElement;
-  body.querySelectorAll("script, style, nav, svg").forEach((node) => node.remove());
-  return body.innerText || body.textContent || "";
+  if (!body) return "";
+
+  // 去掉无关元素后取文本：textContent 优先（未挂载到 DOM 的 Document 上 innerText 多半为空）
+  body.querySelectorAll("script, style, nav, svg, header, footer").forEach((node) => node.remove());
+
+  // 按块级元素插入换行，避免段落被拼成一行
+  const blockSelectors = "p, div, br, h1, h2, h3, h4, h5, h6, li, blockquote, section, article";
+  const parts = [];
+  body.querySelectorAll(blockSelectors).forEach((el) => {
+    if (el.tagName === "BR") {
+      parts.push("\n");
+    } else {
+      const piece = (el.textContent || "").trim();
+      if (piece) parts.push(piece + "\n");
+    }
+  });
+
+  // 如果按块级元素没拿到内容（结构很扁），回退到整段 textContent
+  const composed = parts.join("").trim();
+  if (composed) return composed;
+  return (body.textContent || "").trim();
 }
 
 function joinPdfTextItems(items) {
@@ -465,6 +544,8 @@ function countReadableChars(text) {
 }
 
 function renderAll() {
+  // 先刷新 shell 上的主题/书库/沉浸等类，再渲染内容，避免状态错位
+  applySettings();
   renderBook();
   renderReader();
   applyTranslatorSettings();
@@ -742,17 +823,52 @@ function getChapterSentencePairs(chapter, chapterIndex) {
   }));
 }
 
+// 将一段文本切成"一句一行"。
+// 设计要点：
+//   - 中日韩句末标点（。！？；…）一律直接断句；
+//   - 英文 . ! ? 需要避开 acm.org、Vol. 54、S. Khan、et al.、U.S.A. 等缩写/初始字母/网址；
+//   - 不在词内部断句（"acm.org" 这种 . 后面紧跟非空字符时跳过）。
 function splitSentences(text) {
-  const normalized = normalizeText(text);
+  const normalized = normalizeText(text).replace(/\n+/g, " ").replace(/[ \t]+/g, " ");
   if (!normalized) return [];
 
   const sentences = [];
   let buffer = "";
+  const len = normalized.length;
 
-  for (const char of normalized.replace(/\n+/g, " ")) {
+  for (let i = 0; i < len; i += 1) {
+    const char = normalized[i];
     buffer += char;
 
-    if (/[。！？!?；;…]/.test(char)) {
+    // CJK 句末标点：直接断句
+    if (/[。！？；…]/.test(char)) {
+      pushSentence(sentences, buffer);
+      buffer = "";
+      continue;
+    }
+
+    // 英文 . ! ?：需要严格判断，避免缩写/网址/小数点等场景的误断
+    if (/[.!?]/.test(char)) {
+      const next = normalized[i + 1];
+      // 后面紧跟非空字符（如 acm.org、3.14）说明是词内 . 不是句末
+      if (next && !/\s/.test(next)) continue;
+
+      // 找下一个非空字符，判断是不是像新句开头
+      let nextNonSpace = "";
+      for (let j = i + 1; j < len; j += 1) {
+        if (!/\s/.test(normalized[j])) {
+          nextNonSpace = normalized[j];
+          break;
+        }
+      }
+      // 下一个实体是小写字母或数字（"Vol. 54"、"No. 10s"），多半不是真正句末
+      if (nextNonSpace && /[a-z0-9]/.test(nextNonSpace)) continue;
+
+      // 看本段末尾的最后一个词，判断是否是缩写
+      const beforeDot = buffer.slice(0, -1);
+      const lastWord = (beforeDot.match(/(\S+)$/) || ["", ""])[1];
+      if (isLikelyAbbreviation(lastWord)) continue;
+
       pushSentence(sentences, buffer);
       buffer = "";
     }
@@ -760,6 +876,25 @@ function splitSentences(text) {
 
   pushSentence(sentences, buffer);
   return sentences.flatMap((sentence) => splitLongSentence(sentence, 420));
+}
+
+// 判断一个词是不是常见缩写或人名初始字母，用来避免误断
+function isLikelyAbbreviation(word) {
+  if (!word) return false;
+  // 单个 ASCII 字母（"S"、"K"）：当成人名首字母
+  if (word.length === 1 && /[A-Za-z]/.test(word)) return true;
+  // 字母+点反复组合的缩写（"U.S"、"U.S.A"、"e.g"、"i.e"）
+  if (/^([A-Za-z]\.)+[A-Za-z]?$/.test(word)) return true;
+  // 常见学术/称谓缩写词典
+  const known = new Set([
+    "mr", "mrs", "ms", "dr", "prof", "st", "jr", "sr", "vs",
+    "etc", "eg", "ie", "al", "ed", "eds",
+    "vol", "no", "nos", "fig", "figs", "eq", "eqs", "ref", "refs", "pp",
+    "inc", "ltd", "co", "corp",
+    "am", "pm",
+    "comput", "surv", "trans", "sci", "tech", "syst", "proc", "rev", "j",
+  ]);
+  return known.has(word.toLowerCase());
 }
 
 function pushSentence(sentences, value) {
@@ -957,14 +1092,25 @@ function createSentencePairBlock(block, index) {
   row.className = "sentence-pair";
   row.dataset.virtualIndex = String(index);
   row.dataset.cacheKey = block.cacheKey;
+  // 虚拟列表滚动后重新创建的句对，若就是当前焦点行，应恢复行级与对侧栏的高亮
+  const isFocusedRow = Boolean(block.cacheKey) && block.cacheKey === focusedSentenceKey;
+  if (isFocusedRow) {
+    row.classList.add("is-focused");
+  }
 
   const original = document.createElement("p");
   original.className = "sentence-cell original-cell";
   original.textContent = block.text;
+  if (isFocusedRow && focusedSentenceSide === "original") {
+    original.classList.add("is-cell-focused");
+  }
 
   const translated = document.createElement("p");
   translated.className = "sentence-cell translated-cell";
   translated.textContent = getSentenceMemoryValue(block.cacheKey) || "翻译中...";
+  if (isFocusedRow && focusedSentenceSide === "translated") {
+    translated.classList.add("is-cell-focused");
+  }
 
   if (state.translator.swapColumns) {
     row.append(translated, original);
@@ -1225,6 +1371,7 @@ function moveChapter(direction) {
 }
 
 function handleReaderScroll() {
+  closeLookupPopup();
   window.clearTimeout(saveTimer);
   scheduleVirtualRender();
   updateCurrentChapterFromScroll();
@@ -2091,12 +2238,22 @@ function updateSetting(key, value) {
 }
 
 function applySettings() {
-  const { theme, fontSize, lineHeight, controlsOpen, parallelRatio } = state.settings;
+  const { theme, fontSize, lineHeight, controlsOpen, parallelRatio, sidebarOpen } = state.settings;
+  // 是否已有书：用于决定书库默认是展开还是允许收起
+  const hasBook = state.chapters.length > 0;
+
   dom.shell.dataset.theme = theme;
+  dom.shell.classList.toggle("has-book", hasBook);
   dom.shell.classList.toggle("immersive-mode", state.immersive);
   dom.shell.classList.toggle("immersive-peek", false);
   // 控制底部设置栏的折叠/展开
   dom.shell.classList.toggle("controls-open", Boolean(controlsOpen));
+
+  // 侧边书库：无书时强制展开；有书时遵循 sidebarOpen
+  const sidebarVisible = !hasBook || Boolean(sidebarOpen);
+  dom.shell.classList.toggle("sidebar-collapsed", hasBook && !sidebarOpen);
+  dom.shell.classList.toggle("sidebar-open", sidebarVisible);
+
   // 把双栏比例写到 shell 上，让所有 sentence-pair 和分界线共享同一个值
   const safeRatio = clamp(Number(parallelRatio) || 0.5, 0.2, 0.8);
   dom.shell.style.setProperty("--parallel-ratio", safeRatio.toFixed(3));
@@ -2108,6 +2265,13 @@ function applySettings() {
   dom.settingsToggle.classList.toggle("active", Boolean(controlsOpen));
   dom.settingsToggle.setAttribute("aria-expanded", controlsOpen ? "true" : "false");
   dom.settingsToggle.textContent = controlsOpen ? "收起" : "设置";
+
+  // 同步侧边栏按钮的 active / aria-expanded（按钮在无书时被 CSS 隐藏）
+  if (dom.sidebarToggle) {
+    dom.sidebarToggle.classList.toggle("active", sidebarVisible);
+    dom.sidebarToggle.setAttribute("aria-expanded", sidebarVisible ? "true" : "false");
+    dom.sidebarToggle.setAttribute("aria-label", sidebarVisible ? "收起书库" : "展开书库");
+  }
 
   Object.entries(dom.themeButtons).forEach(([buttonTheme, button]) => {
     button.classList.toggle("active", buttonTheme === theme);
@@ -2121,6 +2285,190 @@ function toggleReadingControls() {
   state.settings.controlsOpen = !state.settings.controlsOpen;
   applySettings();
   saveState();
+}
+
+// 切换左侧书库栏的展开/收起；无书时按钮被 CSS 隐藏，此时点击无效
+function toggleSidebar() {
+  if (!state.chapters.length) return;
+  state.settings.sidebarOpen = !state.settings.sidebarOpen;
+  applySettings();
+  saveState();
+}
+
+// ============ 双栏翻译模式：点击/选中 → 高亮对侧句子 ============
+
+// 点击任一句对：在哪一侧点，就把对侧那一栏高亮；同一侧再点取消；点不同行/侧切换
+function handleSentencePairFocus(event) {
+  if (!isParallelTranslationEnabled()) return;
+  // 用户正在拖选文本时交给 mouseup 处理，这里跳过
+  const selection = window.getSelection?.();
+  if (selection && !selection.isCollapsed && String(selection).length > 0) {
+    return;
+  }
+  if (event.target.closest(".parallel-divider")) return;
+
+  const cell = event.target.closest(".sentence-cell");
+  const row = event.target.closest(".sentence-pair");
+  if (!row || !dom.reader.contains(row)) return;
+
+  const key = row.dataset.cacheKey || "";
+  const targetSide = getOppositeSideOfCell(cell);
+  if (!targetSide) return; // 点在了中缝/空白，没有明确的"对侧"
+
+  if (focusedSentenceKey === key && focusedSentenceSide === targetSide) {
+    focusedSentenceKey = null;
+    focusedSentenceSide = null;
+  } else {
+    focusedSentenceKey = key;
+    focusedSentenceSide = targetSide;
+  }
+  applySentenceFocus();
+}
+
+// 鼠标拖选文本结束：在哪一侧选，就高亮对侧那一栏
+function handleSelectionFocus() {
+  if (!isParallelTranslationEnabled()) return;
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed) return;
+  if (!String(selection).trim()) return;
+
+  const anchorCell = findSentenceCellFromNode(selection.anchorNode);
+  const focusCell = findSentenceCellFromNode(selection.focusNode);
+  // 选区跨多个单元格时不切换焦点，避免误判
+  if (!anchorCell || anchorCell !== focusCell) return;
+
+  const row = anchorCell.closest(".sentence-pair");
+  if (!row) return;
+
+  const key = row.dataset.cacheKey || "";
+  const targetSide = getOppositeSideOfCell(anchorCell);
+  if (!key || !targetSide) return;
+
+  if (focusedSentenceKey !== key || focusedSentenceSide !== targetSide) {
+    focusedSentenceKey = key;
+    focusedSentenceSide = targetSide;
+    applySentenceFocus();
+  }
+}
+
+// 同步行级 .is-focused 与目标侧单元格的 .is-cell-focused
+function applySentenceFocus() {
+  dom.reader.querySelectorAll(".sentence-pair").forEach((row) => {
+    const isRow = Boolean(focusedSentenceKey) && row.dataset.cacheKey === focusedSentenceKey;
+    row.classList.toggle("is-focused", isRow);
+    row.querySelectorAll(".sentence-cell").forEach((cell) => {
+      const isTarget = isRow && focusedSentenceSide && cell.classList.contains(`${focusedSentenceSide}-cell`);
+      cell.classList.toggle("is-cell-focused", Boolean(isTarget));
+    });
+  });
+}
+
+// 根据点击/选中所在的单元格，返回需要高亮的"对侧" side 名
+function getOppositeSideOfCell(cell) {
+  if (!cell) return null;
+  if (cell.classList.contains("original-cell")) return "translated";
+  if (cell.classList.contains("translated-cell")) return "original";
+  return null;
+}
+
+// 从 Selection 端点节点向上找到所在的 .sentence-cell
+function findSentenceCellFromNode(node) {
+  if (!node) return null;
+  const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  return el?.closest?.(".sentence-cell") || null;
+}
+
+// ============ 选中正文中的英文 → 弹出查词弹窗 ============
+
+// 仅允许纯英文短语：必须以字母开头，允许字母 / 空格 / 连字符 / 撇号
+const LOOKUP_WORD_REGEX = /^[a-zA-Z][a-zA-Z\s\-']*$/;
+let currentLookupPopup = null;
+let lookupOutsideClickHandler = null;
+
+function handleLookupSelection() {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed) {
+    closeLookupPopup();
+    return;
+  }
+
+  const word = String(selection).trim();
+  if (!word || !LOOKUP_WORD_REGEX.test(word)) {
+    closeLookupPopup();
+    return;
+  }
+
+  let rect = null;
+  try {
+    rect = selection.getRangeAt(0).getBoundingClientRect();
+  } catch {
+    closeLookupPopup();
+    return;
+  }
+  if (!rect || (rect.width === 0 && rect.height === 0)) {
+    closeLookupPopup();
+    return;
+  }
+
+  openLookupPopup(word, rect);
+}
+
+function openLookupPopup(word, anchorRect) {
+  closeLookupPopup();
+
+  const popup = document.createElement("div");
+  popup.className = "lookup-popup";
+
+  const title = document.createElement("div");
+  title.className = "lookup-word";
+  title.textContent = word;
+
+  const body = document.createElement("div");
+  body.className = "lookup-body";
+  body.textContent = "查询中...";
+
+  popup.append(title, body);
+  // 挂到 .app-shell 内部以继承当前主题变量（夜间/清爽等）
+  dom.shell.append(popup);
+  positionLookupPopup(popup, anchorRect);
+
+  currentLookupPopup = popup;
+  lookupOutsideClickHandler = (event) => {
+    if (popup.contains(event.target)) return;
+    closeLookupPopup();
+  };
+  document.addEventListener("mousedown", lookupOutsideClickHandler);
+}
+
+function closeLookupPopup() {
+  if (currentLookupPopup) {
+    currentLookupPopup.remove();
+    currentLookupPopup = null;
+  }
+  if (lookupOutsideClickHandler) {
+    document.removeEventListener("mousedown", lookupOutsideClickHandler);
+    lookupOutsideClickHandler = null;
+  }
+}
+
+function positionLookupPopup(popup, anchorRect) {
+  const margin = 8;
+  const width = popup.offsetWidth;
+  const height = popup.offsetHeight;
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+
+  let left = anchorRect.left + anchorRect.width / 2 - width / 2;
+  let top = anchorRect.bottom + margin;
+
+  if (left < margin) left = margin;
+  if (left + width > viewportWidth - margin) left = viewportWidth - width - margin;
+  if (top + height > viewportHeight - margin) {
+    top = Math.max(margin, anchorRect.top - height - margin);
+  }
+
+  popup.style.left = `${left}px`;
+  popup.style.top = `${top}px`;
 }
 
 function handleShortcuts(event) {
@@ -2152,7 +2500,8 @@ function handleImmersivePointer(event) {
 function clearBook() {
   state = {
     ...defaultState,
-    settings: state.settings,
+    // 清空时把书库重新展开，方便用户立即导入下一本
+    settings: { ...state.settings, sidebarOpen: true },
     translator: state.translator,
     immersive: false,
   };

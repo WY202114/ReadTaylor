@@ -1,0 +1,10 @@
+# Claude 工具本地配置，不提交
+.claude/
+
+# 如果以后有专门放密钥的文件，也加进来
+.env
+.env.local
+
+# 依赖和构建产物（如果用了 npm / 构建工具）
+node_modules/
+dist/

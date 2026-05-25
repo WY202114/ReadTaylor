@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   color-scheme: light;
   --bg: #edf0ea;
   --panel: #fbfaf5;
@@ -12,10 +12,10 @@
   --accent-soft: #dceee8;
   --shadow: 0 24px 70px rgba(42, 45, 40, 0.14);
   --radius: 8px;
-  /* 双栏翻译模式分界线颜色（纸张主题：偏暖灰，清晰但不刺眼） */
+  /* 鍙屾爮缈昏瘧妯″紡鍒嗙晫绾块鑹诧紙绾稿紶涓婚锛氬亸鏆栫伆锛屾竻鏅颁絾涓嶅埡鐪硷級 */
   --parallel-divider: #c5bd9c;
   --parallel-divider-hover: var(--accent);
-  /* 双栏翻译左右栏宽度比例（0.5 表示对半分） */
+  /* 鍙屾爮缈昏瘧宸﹀彸鏍忓搴︽瘮渚嬶紙0.5 琛ㄧず瀵瑰崐鍒嗭級 */
   --parallel-ratio: 0.5;
   font-family:
     "Microsoft YaHei",
@@ -59,6 +59,7 @@ button {
   grid-template-columns: 300px minmax(0, 1fr);
   min-height: 100vh;
   color: var(--reader-ink);
+  transition: grid-template-columns 0.22s ease;
 }
 
 .library-panel {
@@ -70,6 +71,11 @@ button {
   border-right: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 94%, transparent);
   overflow: hidden;
+  transition:
+    padding 0.22s ease,
+    opacity 0.18s ease,
+    transform 0.22s ease,
+    border-color 0.22s ease;
 }
 
 .brand {
@@ -304,7 +310,7 @@ button {
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   height: 100vh;
-  padding: 12px 16px;
+  padding: 6px 12px 10px;
 }
 
 .reader-toolbar,
@@ -317,7 +323,7 @@ button {
 }
 
 .reader-toolbar {
-  min-height: 50px;
+  min-height: 38px;
 }
 
 .reader-status {
@@ -328,6 +334,47 @@ button {
   min-width: 0;
   flex: 1;
   color: var(--muted);
+}
+
+.sidebar-toggle {
+  position: fixed;
+  z-index: 9;
+  top: 50%;
+  left: 292px;
+  display: inline-grid;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 64px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  color: var(--reader-ink);
+  box-shadow: 0 10px 30px rgba(42, 45, 40, 0.14);
+  font-size: 0;
+  font-weight: 700;
+  overflow: hidden;
+  transform: translate(-50%, -50%);
+  transition:
+    left 0.22s ease,
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease,
+    opacity 0.18s ease;
+}
+
+
+.sidebar-toggle:hover,
+.sidebar-toggle.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.sidebar-toggle:hover {
+  transform: translate(-50%, -50%) scale(1.04);
 }
 
 .reader-status span {
@@ -372,7 +419,8 @@ button {
 
 .tool-button,
 .segmented {
-  padding: 0 13px;
+  min-height: 32px;
+  padding: 0 12px;
 }
 
 .tool-button.active {
@@ -454,22 +502,52 @@ button {
 
 .sentence-pair {
   display: grid;
-  /* 通过 --parallel-ratio 变量动态控制左右栏宽度；中间 24px 留给分界线视觉间距 */
+  /* 閫氳繃 --parallel-ratio 鍙橀噺鍔ㄦ€佹帶鍒跺乏鍙虫爮瀹藉害锛涗腑闂?24px 鐣欑粰鍒嗙晫绾胯瑙夐棿璺?*/
   grid-template-columns:
     minmax(0, calc(var(--parallel-ratio, 0.5) * (100% - 24px)))
     minmax(0, calc((1 - var(--parallel-ratio, 0.5)) * (100% - 24px)));
   gap: 24px;
   align-items: start;
-  padding: 8px 0;
+  padding: 8px 12px;
+  margin: 0 -12px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  /* 句对支持点击高亮，故可交互；同时给背景/边框加过渡 */
+  cursor: pointer;
+  border-radius: 6px;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-/* 双栏翻译模式下的可拖动分界线（独立浮层，覆盖在 virtual-reader 上） */
+/* 鼠标悬停未选中的句对：浅色提示可点击，不打扰阅读 */
+.sentence-pair:hover:not(.is-focused) {
+  background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
+}
+
+/* 行级浅高亮：只是淡淡提示"这一行是当前焦点"，真正强调放在对侧那一栏 */
+.sentence-pair.is-focused {
+  background: color-mix(in srgb, var(--accent-soft) 30%, transparent);
+}
+
+/* 单元格级强高亮：用户选中/点击哪一侧，对侧那一栏就用这个样式凸显出来 */
+.sentence-cell.is-cell-focused {
+  background: color-mix(in srgb, var(--accent-soft) 90%, transparent);
+  color: var(--accent-strong);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+/* 鍙屾爮缈昏瘧妯″紡涓嬬殑鍙嫋鍔ㄥ垎鐣岀嚎锛堢嫭绔嬫诞灞傦紝瑕嗙洊鍦?virtual-reader 涓婏級 */
 .parallel-divider {
   position: absolute;
   top: 0;
   bottom: 0;
-  /* 与 .sentence-pair 一致：左栏占 ratio*(100%-24px)，再加 24px 中缝的一半 = 中缝中点 */
+  /* 涓?.sentence-pair 涓€鑷达細宸︽爮鍗?ratio*(100%-24px)锛屽啀鍔?24px 涓紳鐨勪竴鍗?= 涓紳涓偣 */
   left: calc(var(--parallel-ratio, 0.5) * (100% - 24px) + 12px);
   width: 18px;
   margin-left: -9px;
@@ -492,7 +570,7 @@ button {
     box-shadow 0.15s ease;
 }
 
-/* 中央的握把提示：让用户一眼看出可拖动 */
+/* 涓ぎ鐨勬彙鎶婃彁绀猴細璁╃敤鎴蜂竴鐪肩湅鍑哄彲鎷栧姩 */
 .parallel-divider::after {
   content: "";
   position: absolute;
@@ -540,6 +618,34 @@ button {
 }
 
 .sentence-pair[data-status="loading"] .translated-cell {
+  color: var(--muted);
+}
+
+/* 选中英文单词/短语后浮在选区附近的查词弹窗 */
+.lookup-popup {
+  position: fixed;
+  z-index: 100;
+  min-width: 200px;
+  max-width: 320px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--reader-ink);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.lookup-popup .lookup-word {
+  margin-bottom: 6px;
+  color: var(--accent-strong);
+  font-size: 16px;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.lookup-popup .lookup-body {
   color: var(--muted);
 }
 
@@ -598,7 +704,7 @@ button {
 }
 
 .reading-controls {
-  /* 默认收起底部设置栏，腾出更多正文阅读空间；点击工具栏中的“设置”按钮才展开 */
+  /* 榛樿鏀惰捣搴曢儴璁剧疆鏍忥紝鑵惧嚭鏇村姝ｆ枃闃呰绌洪棿锛涚偣鍑诲伐鍏锋爮涓殑鈥滆缃€濇寜閽墠灞曞紑 */
   display: none;
   flex-wrap: wrap;
   gap: 10px;
@@ -606,7 +712,7 @@ button {
   padding: 6px 0 4px;
 }
 
-/* 展开状态：display 重新生效，并采用更紧凑的尺寸 */
+/* 灞曞紑鐘舵€侊細display 閲嶆柊鐢熸晥锛屽苟閲囩敤鏇寸揣鍑戠殑灏哄 */
 .app-shell.controls-open .reading-controls {
   display: flex;
 }
@@ -813,15 +919,65 @@ button {
 }
 
 .app-shell.sidebar-collapsed {
+  /* 鏀惰捣鍚庤宸﹀垪瀹屽叏褰掗浂锛屾妸绌洪棿鍏ㄩ儴璁╃粰姝ｆ枃锛涘睍寮€鎸夐挳淇濈暀鍦ㄩ《閮ㄥ伐鍏锋爮 */
   grid-template-columns: 0 minmax(0, 1fr);
 }
 
 .app-shell.sidebar-collapsed .library-panel {
   padding-right: 0;
   padding-left: 0;
-  border-right: 0;
+  border-right-color: transparent;
   opacity: 0;
   pointer-events: none;
+  transform: translateX(-100%);
+}
+
+.app-shell.sidebar-collapsed .sidebar-toggle {
+  left: 14px;
+}
+
+.app-shell.sidebar-open .sidebar-toggle::before {
+  content: "脳";
+}
+
+.app-shell.sidebar-collapsed .reader-toolbar,
+.app-shell.sidebar-collapsed .reading-controls,
+.app-shell.sidebar-collapsed .reader {
+  width: 100%;
+}
+
+.sidebar-toggle::before,
+.sidebar-toggle::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: transform 0.18s ease;
+}
+
+.sidebar-toggle::before {
+  transform: translateY(-4px);
+}
+
+.sidebar-toggle::after {
+  transform: translateY(4px);
+}
+
+.app-shell.sidebar-open .sidebar-toggle::before {
+  content: "";
+  transform: rotate(45deg);
+}
+
+.app-shell.sidebar-open .sidebar-toggle::after {
+  content: "";
+  transform: rotate(-45deg);
+}
+
+.app-shell:not(.has-book) .sidebar-toggle,
+.app-shell.immersive-mode .sidebar-toggle {
+  display: none;
 }
 
 .app-shell.immersive-mode {
@@ -862,10 +1018,10 @@ button {
 .app-shell.immersive-mode.immersive-peek .reader-toolbar {
   position: fixed;
   z-index: 8;
-  top: 10px;
+  top: 8px;
   left: 50%;
   width: min(980px, calc(100% - 24px));
-  padding: 8px 12px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--panel) 96%, transparent);
@@ -888,7 +1044,7 @@ button {
   --accent-strong: #8ed4c5;
   --accent-soft: #243a38;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
-  /* 夜间主题分界线：深背景下用偏亮的中性灰，避免眩光 */
+  /* 澶滈棿涓婚鍒嗙晫绾匡細娣辫儗鏅笅鐢ㄥ亸浜殑涓€х伆锛岄伩鍏嶇湬鍏?*/
   --parallel-divider: #525c61;
   --parallel-divider-hover: var(--accent-strong);
 }
@@ -905,7 +1061,7 @@ button {
   --accent-strong: #27536e;
   --accent-soft: #dcecf3;
   --shadow: 0 24px 70px rgba(39, 83, 110, 0.14);
-  /* 清爽主题分界线：偏冷灰，配合青蓝主题色 */
+  /* 娓呯埥涓婚鍒嗙晫绾匡細鍋忓喎鐏帮紝閰嶅悎闈掕摑涓婚鑹?*/
   --parallel-divider: #a8b8bb;
   --parallel-divider-hover: var(--accent);
 }
@@ -920,11 +1076,20 @@ button {
     z-index: 5;
     width: min(86vw, 330px);
     transform: translateX(-105%);
-    transition: transform 0.18s ease;
     box-shadow: var(--shadow);
   }
 
-  .app-shell.sidebar-open .library-panel {
+  .sidebar-toggle {
+    top: 50%;
+    left: min(86vw, 330px);
+  }
+
+  .app-shell.sidebar-collapsed .sidebar-toggle {
+    left: 12px;
+  }
+
+  .app-shell.sidebar-open .library-panel,
+  .app-shell:not(.has-book) .library-panel {
     transform: translateX(0);
   }
 
@@ -932,7 +1097,8 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .app-shell.sidebar-collapsed .library-panel {
+  .app-shell.sidebar-collapsed.sidebar-open .library-panel,
+  .app-shell:not(.has-book) .library-panel {
     padding: 24px 18px;
     border-right: 1px solid var(--line);
     opacity: 1;
@@ -947,7 +1113,7 @@ button {
 
   .reader-shell {
     position: relative;
-    padding: 10px;
+    padding: 6px 8px 8px;
   }
 
   .reader-toolbar,
@@ -1029,7 +1195,7 @@ button {
     gap: 8px;
   }
 
-  /* 窄屏下双栏退化为单栏，分界线不再适用 */
+  /* 绐勫睆涓嬪弻鏍忛€€鍖栦负鍗曟爮锛屽垎鐣岀嚎涓嶅啀閫傜敤 */
   .parallel-divider {
     display: none;
   }
