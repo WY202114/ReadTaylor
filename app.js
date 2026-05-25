@@ -28,7 +28,7 @@ const dom = {
   translatorStatus: document.querySelector("#translator-status"),
   translateChapter: document.querySelector("#translate-chapter"),
   clearTranslation: document.querySelector("#clear-translation"),
-  parallelTranslateMode: document.querySelector("#parallel-translate-mode"),
+  translatorSettings: document.querySelector("#translator-settings"),
   swapTranslationColumns: document.querySelector("#swap-translation-columns"),
   translateApiKeyRow: document.querySelector("#translate-api-key-row"),
   translateApiKey: document.querySelector("#translate-api-key"),
@@ -136,13 +136,13 @@ function bindEvents() {
   dom.restoreBookmark.addEventListener("click", restoreBookmark);
   dom.settingsToggle.addEventListener("click", toggleReadingControls);
   if (dom.sidebarToggle) dom.sidebarToggle.addEventListener("click", toggleSidebar);
-  dom.translateToggle.addEventListener("click", toggleTranslatorPanel);
+  // "翻译" 按钮本身是开关：一次点击即可开启/关闭翻译
+  dom.translateToggle.addEventListener("click", toggleParallelTranslation);
+  // 翻译设置面板由旁边的 "⋯" 按钮单独控制
+  dom.translatorSettings.addEventListener("click", toggleTranslatorPanel);
   dom.translatorClose.addEventListener("click", closeTranslatorPanel);
   dom.translateChapter.addEventListener("click", translateCurrentChapter);
   dom.clearTranslation.addEventListener("click", clearCurrentTranslation);
-  dom.parallelTranslateMode.addEventListener("change", (event) =>
-    updateTranslator("parallelMode", event.target.checked, true)
-  );
   dom.swapTranslationColumns.addEventListener("click", swapTranslationColumns);
   dom.reader.addEventListener("scroll", handleReaderScroll, { passive: true });
   // 双栏翻译模式下：点击任一侧 → 高亮对侧；拖选文本 → 同样高亮对侧
@@ -1492,6 +1492,55 @@ function closeTranslatorPanel() {
   saveState();
 }
 
+// 顶部 "翻译" 按钮的一键开关：
+//   关 → 开：切到双栏模式，hydrate 时会自动把可见句对加入翻译队列；
+//   开 → 关：恢复原文视图、清空待翻译队列、释放高亮状态。
+// 未填好 Base URL / API Key / 模型 时不允许开启，自动弹出设置面板提示。
+function toggleParallelTranslation() {
+  if (isParallelTranslationEnabled()) {
+    const progress = getScrollProgress();
+    state.translator.parallelMode = false;
+    if (state.translator.view === "parallel") {
+      state.translator.view = "original";
+    }
+    // 关掉翻译时把待处理队列清掉，避免后台继续消耗 API 配额
+    queuedSentenceTranslations.clear();
+    sentenceTranslationQueue.length = 0;
+    focusedSentenceKey = null;
+    focusedSentenceSide = null;
+    persistCurrentScroll();
+    saveState();
+    applyTranslatorSettings();
+    renderReader();
+    restoreScroll(progress * Math.max(1, dom.reader.scrollHeight - dom.reader.clientHeight));
+    updateButtons();
+    setTranslatorStatus("已关闭翻译，正文已恢复原文。", "success");
+    return;
+  }
+
+  if (!canUseParallelTranslator()) {
+    state.translator.panelOpen = true;
+    applyTranslatorSettings();
+    saveState();
+    setTranslatorStatus("请先填写 Base URL、API Key 和模型名后再开启翻译。", "error");
+    return;
+  }
+
+  const progress = getScrollProgress();
+  state.translator.parallelMode = true;
+  state.translator.view = "parallel";
+  state.translator.provider = "model";
+  persistCurrentScroll();
+  saveState();
+  applyTranslatorSettings();
+  renderReader();
+  restoreScroll(progress * Math.max(1, dom.reader.scrollHeight - dom.reader.clientHeight));
+  updateButtons();
+  // 切换到双栏模式后 renderVirtualWindow → hydrateVisibleSentenceTranslations
+  // 会自动把可见句对入队，无需再手动触发
+  setTranslatorStatus("已开启翻译，可见内容将按队列自动翻译。", "loading");
+}
+
 function updateTranslator(key, value, shouldRender = false) {
   state.translator[key] = value;
 
@@ -1536,7 +1585,9 @@ function applyTranslatorSettings() {
   const translator = state.translator;
   const providerLabel = getTranslatorProviderLabel();
   dom.translatorPanel.hidden = !translator.panelOpen;
-  dom.translateToggle.classList.toggle("active", translator.panelOpen);
+  // "翻译" 按钮高亮 = 翻译已开启；"⋯" 按钮高亮 = 设置面板已打开
+  dom.translateToggle.classList.toggle("active", isParallelTranslationEnabled());
+  dom.translatorSettings.classList.toggle("active", translator.panelOpen);
   dom.translatorCurrent.textContent = providerLabel;
   dom.translateApiKey.value = translator.apiKey || "";
   dom.translateEndpoint.value = translator.endpoint || "";
@@ -1545,7 +1596,6 @@ function applyTranslatorSettings() {
   dom.translateTarget.value = translator.target;
   dom.translateView.value = translator.view;
   dom.translateChunkSize.value = String(translator.chunkSize);
-  dom.parallelTranslateMode.checked = Boolean(translator.parallelMode || translator.view === "parallel");
   dom.translateApiKeyRow.hidden = translator.provider === "free" && !isParallelTranslationEnabled();
   dom.translateEndpointRow.hidden = translator.provider !== "model" && !isParallelTranslationEnabled();
   dom.translateModelRow.hidden = translator.provider !== "model" && !isParallelTranslationEnabled();

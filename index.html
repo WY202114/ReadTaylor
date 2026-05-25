@@ -64,6 +64,8 @@
           <div class="toolbar-actions">
             <button id="immersive-toggle" class="tool-button" type="button">沉浸</button>
             <button id="translate-toggle" class="tool-button" type="button">翻译</button>
+            <!-- 翻译按钮本身是开关，这个图标按钮专门用来打开/关闭翻译设置面板 -->
+            <button id="translator-settings" class="tool-button tool-icon" type="button" aria-label="翻译设置" title="翻译设置">⋯</button>
             <button id="bookmark-button" class="tool-button" type="button">书签</button>
             <!-- 折叠/展开底部设置栏 -->
             <button id="settings-toggle" class="tool-button" type="button" aria-expanded="false" aria-controls="reading-controls">设置</button>
@@ -173,11 +175,6 @@
                 </select>
               </label>
             </div>
-
-            <label class="toggle-row">
-              <span>翻译模式</span>
-              <input id="parallel-translate-mode" type="checkbox" />
-            </label>
 
             <div class="translator-actions">
               <button id="translate-chapter" class="primary-button" type="button">翻译可见内容</button>
