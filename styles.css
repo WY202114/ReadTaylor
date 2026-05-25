@@ -635,7 +635,7 @@ button {
   z-index: 6;
   top: 74px;
   right: 22px;
-  display: none;
+  display: flex;
   flex-direction: column;
   gap: 12px;
   width: min(420px, calc(100% - 44px));
@@ -646,10 +646,6 @@ button {
   background: color-mix(in srgb, var(--panel) 96%, transparent);
   box-shadow: var(--shadow);
   overflow: hidden;
-}
-
-.marks-panel.open {
-  display: flex;
 }
 
 .marks-head {
