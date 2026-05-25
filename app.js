@@ -1,4 +1,8 @@
 const STORAGE_KEY = "readTaylorState";
+// 按 bookId 分离的持久化键：进度和标记（书签/笔记）独立于主 state，
+// 让"清空当前书 → 再导入同一本书"也能找回历史阅读位置和标记。
+const PROGRESS_KEY_PREFIX = "rt_progress_";
+const NOTES_KEY_PREFIX = "rt_notes_";
 const EPUB_JS_URL = "https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js";
 // EPUB 本质是 zip 包，epub.js 解析时依赖 JSZip，必须先加载
 const JSZIP_URL = "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
@@ -45,8 +49,12 @@ const dom = {
     google: document.querySelector("#provider-google"),
     model: document.querySelector("#provider-model"),
   },
-  bookmarkButton: document.querySelector("#bookmark-button"),
   restoreBookmark: document.querySelector("#restore-bookmark"),
+  marksButton: document.querySelector("#marks-button"),
+  marksPanel: document.querySelector("#marks-panel"),
+  marksClose: document.querySelector("#marks-close"),
+  marksList: document.querySelector("#marks-list"),
+  marksFilter: document.querySelector("#marks-filter"),
   settingsToggle: document.querySelector("#settings-toggle"),
   sidebarToggle: document.querySelector("#sidebar-toggle"),
   fontSize: document.querySelector("#font-size"),
@@ -72,7 +80,7 @@ const defaultState = {
     panelOpen: false,
     provider: "free",
     apiKey: "",
-    endpoint: "https://api.catcode.top",
+    endpoint: "https://open.bigmodel.cn/api/paas/v4/",
     model: "",
     source: "auto",
     target: "zh-CN",
@@ -121,6 +129,15 @@ function init() {
   applySettings();
   renderAll();
   bindEvents();
+  // 重开 tab 时按 bookId 恢复进度（优先 blockIndex，scrollTop 兜底）。
+  // 主 state 里也保留了 scrollTop，但 rt_progress 是跨"清空主 state / 再导入"的稳定源。
+  if (state.book?.id && state.chapters.length) {
+    const savedProgress = readProgress(state.book.id);
+    if (savedProgress) {
+      restoreFromProgress(savedProgress);
+      showToast("已恢复阅读位置");
+    }
+  }
 }
 
 function bindEvents() {
@@ -131,7 +148,12 @@ function bindEvents() {
   });
   dom.clearBook.addEventListener("click", clearBook);
   dom.immersiveToggle.addEventListener("click", toggleImmersiveMode);
-  dom.bookmarkButton.addEventListener("click", saveBookmark);
+  dom.marksButton.addEventListener("click", toggleMarksPanel);
+  dom.marksClose.addEventListener("click", closeMarksPanel);
+  dom.marksFilter.addEventListener("click", handleMarksFilterClick);
+  dom.marksList.addEventListener("click", handleMarksListClick);
+  // 正文里右键 → 弹出加标记菜单（书签 / 生词 / 好句 / 难句 / 语法）
+  dom.reader.addEventListener("contextmenu", handleReaderContextMenu);
   dom.restoreBookmark.addEventListener("click", restoreBookmark);
   dom.settingsToggle.addEventListener("click", toggleReadingControls);
   if (dom.sidebarToggle) dom.sidebarToggle.addEventListener("click", toggleSidebar);
@@ -182,13 +204,17 @@ async function handleFileImport(event) {
   if (!file) return;
 
   const format = resolveBookFormat(file);
-  setImportStatus(`正在导入 ${format.toUpperCase()}...`, "loading");
+  // SHA-256 大文件可能要几十毫秒到几百毫秒，先 loading 提示避免用户以为卡死
+  setImportStatus("正在计算文件指纹...", "loading");
 
   try {
+    const bookId = await computeFileBookId(file);
+    setImportStatus(`正在导入 ${format.toUpperCase()}...`, "loading");
     const parsed = await parseBookFile(file, format);
     state = {
       ...state,
       book: {
+        id: bookId,
         title: parsed.title || file.name.replace(/\.[^.]+$/, "") || "未命名书籍",
         fileName: file.name,
         format,
@@ -206,7 +232,14 @@ async function handleFileImport(event) {
     };
     saveState();
     renderAll();
-    restoreScroll(0);
+    // 同一本书曾经读到的位置（按 bookId 持久化）优先于 scrollTop = 0
+    const savedProgress = readProgress(bookId);
+    if (savedProgress) {
+      restoreFromProgress(savedProgress);
+      showToast("已恢复阅读位置");
+    } else {
+      restoreScroll(0);
+    }
     dom.reader.focus();
     setImportStatus(`导入完成：${parsed.chapters.length} 章`, "success");
   } catch (error) {
@@ -1374,6 +1407,7 @@ function moveChapter(direction) {
 
 function handleReaderScroll() {
   closeLookupPopup();
+  closeMarkContextMenu();
   window.clearTimeout(saveTimer);
   scheduleVirtualRender();
   updateCurrentChapterFromScroll();
@@ -1381,6 +1415,7 @@ function handleReaderScroll() {
   saveTimer = window.setTimeout(() => {
     persistCurrentScroll();
     saveState();
+    persistReadingProgress();
   }, 180);
 }
 
@@ -1436,7 +1471,7 @@ function restoreBookmark() {
 function updateButtons() {
   const hasBook = state.chapters.length > 0;
   dom.immersiveToggle.classList.toggle("active", state.immersive);
-  dom.bookmarkButton.disabled = !hasBook;
+  dom.marksButton.disabled = !hasBook;
   dom.restoreBookmark.disabled = !hasBook || !state.bookmark;
   dom.translateChapter.disabled = !hasBook;
   dom.clearTranslation.disabled = !hasBook || !getCurrentTranslation();
@@ -1452,6 +1487,8 @@ async function setImmersiveMode(enabled) {
   if (enabled) {
     state.translator.panelOpen = false;
     applyTranslatorSettings();
+    closeMarksPanel();
+    closeMarkContextMenu();
     await enterBrowserFullscreen();
   } else {
     await exitBrowserFullscreen();
@@ -1484,6 +1521,8 @@ async function exitBrowserFullscreen() {
 
 function toggleTranslatorPanel() {
   state.translator.panelOpen = !state.translator.panelOpen;
+  // 翻译面板和标记面板同位（右上浮层），同时只展示一个，避免叠在一起
+  if (state.translator.panelOpen && marksPanelOpen) closeMarksPanel();
   applyTranslatorSettings();
   saveState();
 }
@@ -1586,21 +1625,21 @@ function updateTranslator(key, value, shouldRender = false) {
       state.translator.endpoint = GOOGLE_TRANSLATE_ENDPOINT;
       state.translator.model = "";
     } else if (state.translator.endpoint === GOOGLE_TRANSLATE_ENDPOINT || !state.translator.endpoint) {
-      state.translator.endpoint = "https://api.catcode.top";
+      state.translator.endpoint = "https://open.bigmodel.cn/api/paas/v4/";
     }
   }
 
   if (key === "parallelMode") {
     state.translator.view = value ? "parallel" : "original";
     state.translator.provider = "model";
-    state.translator.endpoint = state.translator.endpoint || "https://api.catcode.top";
+    state.translator.endpoint = state.translator.endpoint || "https://open.bigmodel.cn/api/paas/v4/";
   }
 
   if (key === "view") {
     state.translator.parallelMode = value === "parallel";
     if (value === "parallel") {
       state.translator.provider = "model";
-      state.translator.endpoint = state.translator.endpoint || "https://api.catcode.top";
+      state.translator.endpoint = state.translator.endpoint || "https://open.bigmodel.cn/api/paas/v4/";
     }
   }
 
@@ -1920,6 +1959,12 @@ async function translateWithModel(paragraphs, title) {
 }
 
 async function translateSentenceWithModel(sentence) {
+  // 同语言无需翻译：直接复用原文，避免"中→中"被 LLM 重写出措辞略有差异的结果，
+  // 也省掉一次 API 调用。译文栏拿到的就是原文，左右两栏内容一致、保持干净。
+  if (detectLanguage(sentence) === state.translator.target) {
+    return sentence;
+  }
+
   const response = await fetchWithRateLimitRetry(() => fetch(getChatCompletionsUrl(), {
     method: "POST",
     headers: {
@@ -1954,7 +1999,11 @@ async function translateSentenceWithModel(sentence) {
 
 function getChatCompletionsUrl() {
   const base = normalizeBaseUrl(state.translator.endpoint || defaultState.translator.endpoint);
-  return base.endsWith("/chat/completions") ? base : `${base.replace(/\/v1$/, "")}/v1/chat/completions`;
+  if (base.endsWith("/chat/completions")) return base;
+  // 已经带版本号的 base（OpenAI 的 /v1、智谱的 /v4 等）直接拼 /chat/completions，
+  // 否则按 OpenAI 兼容默认补 /v1/chat/completions。
+  if (/\/v\d+$/.test(base)) return `${base}/chat/completions`;
+  return `${base}/v1/chat/completions`;
 }
 
 function normalizeBaseUrl(value) {
@@ -2555,6 +2604,368 @@ function positionLookupPopup(popup, anchorRect) {
   popup.style.top = `${top}px`;
 }
 
+// ============ 书签 / 笔记：加入、列表面板、跳转、删除 ============
+
+const MARK_TAG_LABELS = {
+  bookmark: "书签",
+  vocab: "生词",
+  good: "好句",
+  hard: "难句",
+  grammar: "语法",
+};
+
+let marksPanelOpen = false;
+let marksFilter = "all";
+
+// 在指定 block 上追加一条 mark。type/tag 决定它是书签还是哪种标签的笔记。
+// overrideText 不为空时（一般是用户的选中文字）会用它作为 selectedText，
+// 否则退化到当前 block 文本的前 80 字作为定位预览。
+function appendMark(option, blockInfo, overrideText) {
+  if (!state.book?.id) return false;
+  const block = blockInfo?.block || null;
+  const chapter = state.chapters[block?.chapterIndex ?? state.currentChapterIndex];
+  const fallbackPreview = (block?.text || "").trim().slice(0, 80);
+  const text = (overrideText && overrideText.trim()) ? overrideText.trim() : fallbackPreview;
+  const mark = {
+    id: createMarkId(),
+    type: option.type,
+    chapterIndex: block?.chapterIndex ?? state.currentChapterIndex,
+    chapterTitle: chapter?.title || "",
+    blockIndex: blockInfo?.blockIndex ?? 0,
+    scrollTop: dom.reader.scrollTop,
+    // 限长避免超长选段把 localStorage 撑爆
+    selectedText: text.slice(0, 240),
+    comment: "",
+    tag: option.tag || null,
+    createdAt: Date.now(),
+  };
+  const marks = readMarks(state.book.id);
+  marks.unshift(mark);
+  writeMarks(state.book.id, marks);
+  if (marksPanelOpen) renderMarksList();
+  return true;
+}
+
+// "B" 快捷键：当前位置加一条无标签的书签
+function addBookmark() {
+  if (!state.book?.id || !virtualBook.blocks.length) return;
+  if (appendMark({ type: "bookmark", tag: null }, getCurrentBlockInfo())) {
+    showToast("已加书签");
+  }
+}
+
+// ============ 正文右键菜单：选了就标，不选只能加书签 ============
+
+let currentMarkContextMenu = null;
+let markContextMenuOutsideHandler = null;
+
+function handleReaderContextMenu(event) {
+  // 没书时让浏览器原生菜单走，避免空菜单干扰
+  if (!state.book?.id || !virtualBook.blocks.length) return;
+  event.preventDefault();
+
+  const selection = window.getSelection?.();
+  const hasSelection = Boolean(selection && !selection.isCollapsed && String(selection).trim());
+  const selectedText = hasSelection ? String(selection).trim() : "";
+
+  // 选区落点优先：选了字就用选区所在 block，没选就用当前滚动位置
+  const blockInfo = hasSelection
+    ? findBlockFromSelection(selection) || getCurrentBlockInfo()
+    : getCurrentBlockInfo();
+
+  openMarkContextMenu(event.clientX, event.clientY, blockInfo, selectedText);
+}
+
+function openMarkContextMenu(clientX, clientY, blockInfo, selectedText) {
+  closeMarkContextMenu();
+  closeLookupPopup();
+
+  const menu = document.createElement("div");
+  menu.className = "mark-context-menu";
+
+  // 有选区给 5 个选项（书签 + 4 个标签）；没选区只能加书签
+  const options = selectedText
+    ? [
+        { label: "加为书签", type: "bookmark", tag: null, toast: "已加书签" },
+        { label: "标记为生词", type: "note", tag: "vocab", toast: "已标记为生词" },
+        { label: "标记为好句", type: "note", tag: "good", toast: "已标记为好句" },
+        { label: "标记为难句", type: "note", tag: "hard", toast: "已标记为难句" },
+        { label: "标记为语法", type: "note", tag: "grammar", toast: "已标记为语法" },
+      ]
+    : [
+        { label: "在当前位置加书签", type: "bookmark", tag: null, toast: "已加书签" },
+      ];
+
+  options.forEach((opt) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mark-context-menu-item";
+    btn.textContent = opt.label;
+    btn.addEventListener("click", () => {
+      if (appendMark(opt, blockInfo, selectedText)) {
+        showToast(opt.toast);
+      }
+      closeMarkContextMenu();
+    });
+    menu.append(btn);
+  });
+
+  dom.shell.append(menu);
+  positionMarkContextMenu(menu, clientX, clientY);
+
+  currentMarkContextMenu = menu;
+  markContextMenuOutsideHandler = (event) => {
+    if (menu.contains(event.target)) return;
+    closeMarkContextMenu();
+  };
+  document.addEventListener("mousedown", markContextMenuOutsideHandler);
+}
+
+function closeMarkContextMenu() {
+  if (currentMarkContextMenu) {
+    currentMarkContextMenu.remove();
+    currentMarkContextMenu = null;
+  }
+  if (markContextMenuOutsideHandler) {
+    document.removeEventListener("mousedown", markContextMenuOutsideHandler);
+    markContextMenuOutsideHandler = null;
+  }
+}
+
+function positionMarkContextMenu(menu, x, y) {
+  const margin = 8;
+  const width = menu.offsetWidth;
+  const height = menu.offsetHeight;
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+
+  let left = x;
+  let top = y;
+  if (left + width > viewportWidth - margin) left = viewportWidth - width - margin;
+  if (left < margin) left = margin;
+  if (top + height > viewportHeight - margin) top = viewportHeight - height - margin;
+  if (top < margin) top = margin;
+
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+
+// 从选区端点反查它所在的虚拟 block
+function findBlockFromSelection(selection) {
+  if (!selection || !selection.anchorNode) return null;
+  const node = selection.anchorNode;
+  const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  const blockEl = el?.closest?.("[data-virtual-index]");
+  if (!blockEl) return null;
+  const blockIndex = Number(blockEl.dataset.virtualIndex);
+  if (Number.isNaN(blockIndex)) return null;
+  return { blockIndex, block: virtualBook.blocks[blockIndex] || null };
+}
+
+// 从 dom.reader.scrollTop 推断当前所在的 block
+function getCurrentBlockInfo() {
+  const blockIndex = findBlockIndexAt(dom.reader.scrollTop);
+  return { blockIndex, block: virtualBook.blocks[blockIndex] || null };
+}
+
+// 列表面板：开关、互斥（打开时顺手关掉翻译面板，避免叠在一起）
+function toggleMarksPanel() {
+  if (marksPanelOpen) {
+    closeMarksPanel();
+  } else {
+    openMarksPanel();
+  }
+}
+
+function openMarksPanel() {
+  if (state.translator.panelOpen) closeTranslatorPanel();
+  marksPanelOpen = true;
+  dom.marksPanel.hidden = false;
+  dom.marksButton.classList.add("active");
+  renderMarksList();
+}
+
+function closeMarksPanel() {
+  marksPanelOpen = false;
+  dom.marksPanel.hidden = true;
+  dom.marksButton.classList.remove("active");
+}
+
+// 渲染列表：按 createdAt 倒序 + 按 marksFilter 过滤
+function renderMarksList() {
+  const list = dom.marksList;
+  list.replaceChildren();
+
+  // 同步过滤标签的 active 状态
+  dom.marksFilter.querySelectorAll(".marks-filter-tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.filter === marksFilter);
+  });
+
+  if (!state.book?.id) {
+    list.append(buildMarksEmpty("先导入一本书才能看到这本书的标记。"));
+    return;
+  }
+
+  const all = readMarks(state.book.id);
+  const filtered = all.filter((mark) => markMatchesFilter(mark, marksFilter));
+
+  if (!filtered.length) {
+    list.append(buildMarksEmpty(all.length ? "当前筛选下没有标记。" : "还没有任何标记。"));
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  filtered.forEach((mark) => fragment.append(buildMarkCard(mark)));
+  list.append(fragment);
+}
+
+function buildMarksEmpty(text) {
+  const p = document.createElement("p");
+  p.className = "marks-empty";
+  p.textContent = text;
+  return p;
+}
+
+function markMatchesFilter(mark, filter) {
+  if (filter === "all") return true;
+  if (filter === "bookmark") return mark.type === "bookmark";
+  return mark.type === "note" && mark.tag === filter;
+}
+
+function buildMarkCard(mark) {
+  const item = document.createElement("div");
+  item.className = "mark-item";
+  item.dataset.id = mark.id;
+
+  const meta = document.createElement("div");
+  meta.className = "mark-meta";
+
+  const chapter = document.createElement("span");
+  chapter.className = "mark-chapter";
+  chapter.textContent = mark.chapterTitle || `第 ${(mark.chapterIndex ?? 0) + 1} 章`;
+  meta.append(chapter);
+
+  const time = document.createElement("span");
+  time.className = "mark-time";
+  time.textContent = formatRelativeTime(mark.createdAt);
+  meta.append(time);
+
+  const tagKey = mark.type === "bookmark" ? "bookmark" : mark.tag;
+  if (tagKey) {
+    const tag = document.createElement("span");
+    tag.className = `mark-tag tag-${tagKey}`;
+    tag.textContent = MARK_TAG_LABELS[tagKey] || tagKey;
+    meta.append(tag);
+  }
+
+  item.append(meta);
+
+  if (mark.selectedText) {
+    const text = document.createElement("p");
+    text.className = "mark-text";
+    text.textContent = mark.selectedText;
+    item.append(text);
+  }
+
+  if (mark.comment) {
+    const comment = document.createElement("p");
+    comment.className = "mark-comment";
+    comment.textContent = mark.comment;
+    item.append(comment);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "mark-actions";
+
+  const jump = document.createElement("button");
+  jump.type = "button";
+  jump.className = "mark-jump";
+  jump.dataset.action = "jump";
+  jump.textContent = "跳转";
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "mark-delete";
+  del.dataset.action = "delete";
+  del.textContent = "删除";
+
+  actions.append(jump, del);
+  item.append(actions);
+
+  return item;
+}
+
+// "5 分钟前 / 3 小时前 / 2 天前 / yyyy-mm-dd" 格式
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return "";
+  const diff = Date.now() - Number(timestamp);
+  if (diff < 60 * 1000) return "刚刚";
+  if (diff < 60 * 60 * 1000) return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 24 * 60 * 60 * 1000) return `${Math.floor(diff / 3600000)} 小时前`;
+  if (diff < 30 * 24 * 60 * 60 * 1000) return `${Math.floor(diff / 86400000)} 天前`;
+  return new Date(timestamp).toLocaleDateString();
+}
+
+function createMarkId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  // 兜底：极旧浏览器没 randomUUID 时拼时间戳 + 随机数
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// 过滤标签栏的事件委托：点哪一个就切到它
+function handleMarksFilterClick(event) {
+  const tab = event.target.closest(".marks-filter-tab");
+  if (!tab) return;
+  const next = tab.dataset.filter || "all";
+  if (next === marksFilter) return;
+  marksFilter = next;
+  renderMarksList();
+}
+
+// 列表卡片里的"跳转/删除"按钮事件委托
+function handleMarksListClick(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const card = button.closest(".mark-item");
+  if (!card) return;
+  const id = card.dataset.id;
+  if (!id) return;
+
+  if (button.dataset.action === "jump") {
+    jumpToMarkById(id);
+  } else if (button.dataset.action === "delete") {
+    deleteMarkById(id);
+  }
+}
+
+function jumpToMarkById(id) {
+  if (!state.book?.id) return;
+  const mark = readMarks(state.book.id).find((m) => m.id === id);
+  if (!mark) return;
+
+  // 章节定位：把 currentChapterIndex 调过去，updateButtons 才会同步
+  state.currentChapterIndex = Number(mark.chapterIndex) || 0;
+  // blockIndex 在当前 virtualBook 范围内就用它，否则用 scrollTop 兜底
+  if (
+    typeof mark.blockIndex === "number" &&
+    mark.blockIndex >= 0 &&
+    mark.blockIndex < virtualBook.offsets.length
+  ) {
+    restoreScroll(virtualBook.offsets[mark.blockIndex]);
+  } else {
+    restoreScroll(Number(mark.scrollTop) || 0);
+  }
+  closeMarksPanel();
+}
+
+function deleteMarkById(id) {
+  if (!state.book?.id) return;
+  const marks = readMarks(state.book.id).filter((m) => m.id !== id);
+  writeMarks(state.book.id, marks);
+  renderMarksList();
+  showToast("已删除");
+}
+
 function handleShortcuts(event) {
   if (event.target && ["INPUT", "TEXTAREA"].includes(event.target.tagName)) return;
 
@@ -2572,7 +2983,7 @@ function handleShortcuts(event) {
   }
 
   if (event.key === "b" || event.key === "B") {
-    saveBookmark();
+    addBookmark();
   }
 }
 
@@ -2582,6 +2993,10 @@ function handleImmersivePointer(event) {
 }
 
 function clearBook() {
+  // 清空当前书时关掉标记面板和右键菜单（没书也就没标记可加可看）；
+  // 注意 rt_progress / rt_notes 不主动清，重新导入同一本书还能找回。
+  closeMarksPanel();
+  closeMarkContextMenu();
   state = {
     ...defaultState,
     // 清空时把书库重新展开，方便用户立即导入下一本
@@ -2616,9 +3031,15 @@ function loadState() {
     translator.endpoint = translator.endpoint || defaultState.translator.endpoint;
     translator.parallelMode = Boolean(translator.parallelMode || translator.view === "parallel");
 
+    // 向后兼容：Phase 1 之前导入的书没有 SHA-256 id，给它一个根据
+    // fileName+size 的同步 fallback，保证书签 / 列表 / 进度 API 都能正常找到 bookId。
+    // 新格式（SHA-256 hex）和旧格式（"legacy-…"）格式不同，互不冲突。
+    const book = ensureLegacyBookId(saved?.book);
+
     return {
       ...structuredClone(defaultState),
       ...(saved || {}),
+      book,
       settings: {
         ...defaultState.settings,
         ...(saved?.settings || {}),
@@ -2635,12 +3056,117 @@ function loadState() {
   }
 }
 
+function ensureLegacyBookId(book) {
+  if (!book) return null;
+  if (book.id) return book;
+  const key = `${book.fileName || book.title || ""}::${book.size || 0}`;
+  return { ...book, id: `legacy-${hashText(key)}` };
+}
+
 function saveState() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (error) {
     console.warn("ReadTaylor 保存失败：", error);
   }
+}
+
+// ============ bookId + 按书持久化（进度 / 标记） ============
+
+// 用文件全量内容的 SHA-256 作为 bookId。同名同大小但内容不同的文件不会混淆，
+// 重命名后再导入也能找回原书的进度和标记。
+async function computeFileBookId(file) {
+  const buffer = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function readProgress(bookId) {
+  if (!bookId) return null;
+  try {
+    return JSON.parse(localStorage.getItem(PROGRESS_KEY_PREFIX + bookId) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function writeProgress(bookId, progress) {
+  if (!bookId) return;
+  try {
+    localStorage.setItem(PROGRESS_KEY_PREFIX + bookId, JSON.stringify(progress));
+  } catch (error) {
+    console.warn("ReadTaylor 写入阅读进度失败：", error);
+  }
+}
+
+function readMarks(bookId) {
+  if (!bookId) return [];
+  try {
+    const raw = JSON.parse(localStorage.getItem(NOTES_KEY_PREFIX + bookId) || "null");
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeMarks(bookId, marks) {
+  if (!bookId) return;
+  try {
+    localStorage.setItem(NOTES_KEY_PREFIX + bookId, JSON.stringify(marks));
+  } catch (error) {
+    console.warn("ReadTaylor 写入标记失败：", error);
+  }
+}
+
+// 滚动停下时把当前位置写到 rt_progress_{bookId}。
+// 优先记录 blockIndex（稳定锚点），scrollTop 仅作字号/翻译开关变化后的兜底。
+function persistReadingProgress() {
+  if (!state.book?.id || !virtualBook.blocks.length) return;
+  const blockIndex = findBlockIndexAt(dom.reader.scrollTop);
+  writeProgress(state.book.id, {
+    chapterIndex: state.currentChapterIndex,
+    blockIndex,
+    scrollTop: dom.reader.scrollTop,
+    updatedAt: Date.now(),
+  });
+}
+
+// 按进度记录恢复滚动位置：优先用 blockIndex → 现有 virtualBook.offsets，
+// 没法用时回落到 scrollTop。
+function restoreFromProgress(progress) {
+  if (!progress) {
+    restoreScroll(0);
+    return;
+  }
+  if (
+    typeof progress.blockIndex === "number" &&
+    progress.blockIndex >= 0 &&
+    progress.blockIndex < virtualBook.offsets.length
+  ) {
+    restoreScroll(virtualBook.offsets[progress.blockIndex]);
+    return;
+  }
+  restoreScroll(Number(progress.scrollTop) || 0);
+}
+
+// 轻量 toast，自动 2s 淡出，主要给"已恢复阅读位置"这类一过性提示用
+let toastHideTimer = 0;
+function showToast(message, duration = 2000) {
+  let toast = document.querySelector(".rt-toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.className = "rt-toast";
+    // 挂到 .app-shell 内部以继承当前主题变量（夜间/清爽等）
+    dom.shell.append(toast);
+  }
+  toast.textContent = message;
+  // 强制 reflow，否则刚创建的元素拿不到过渡起点
+  void toast.offsetHeight;
+  toast.classList.add("visible");
+  window.clearTimeout(toastHideTimer);
+  toastHideTimer = window.setTimeout(() => {
+    toast.classList.remove("visible");
+  }, duration);
 }
 
 function clamp(value, min, max) {

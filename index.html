@@ -65,7 +65,8 @@
             <button id="immersive-toggle" class="tool-button" type="button">沉浸</button>
             <!-- 翻译按钮：左键开关；右键或长按打开设置面板 -->
             <button id="translate-toggle" class="tool-button" type="button" title="点击开启/关闭翻译；右键或长按打开翻译设置">翻译</button>
-            <button id="bookmark-button" class="tool-button" type="button">书签</button>
+            <!-- 我的书签：打开列表面板；加书签 / 加标记走正文右键菜单 -->
+            <button id="marks-button" class="tool-button" type="button" title="打开标记列表；正文里右键可加书签/标记">我的书签</button>
             <!-- 折叠/展开底部设置栏 -->
             <button id="settings-toggle" class="tool-button" type="button" aria-expanded="false" aria-controls="reading-controls">设置</button>
           </div>
@@ -106,7 +107,7 @@
 
             <label id="translate-endpoint-row">
               <span>Base URL</span>
-              <input id="translate-endpoint" type="url" placeholder="https://api.catcode.top" />
+              <input id="translate-endpoint" type="url" placeholder="https://open.bigmodel.cn/api/paas/v4/" />
             </label>
 
             <label id="translate-model-row">
@@ -115,21 +116,9 @@
             </label>
 
             <div id="model-presets" class="model-presets" aria-label="推荐模型">
-              <button type="button" data-endpoint="https://api.deepseek.com/v1/chat/completions" data-model="deepseek-chat">
-                <span>DeepSeek</span>
-                <small>OpenAI 兼容</small>
-              </button>
-              <button type="button" data-endpoint="https://openrouter.ai/api/v1/chat/completions" data-model="google/gemini-flash-1.5">
-                <span>Gemini Flash</span>
-                <small>OpenRouter</small>
-              </button>
-              <button type="button" data-endpoint="https://api.openai.com/v1/chat/completions" data-model="gpt-4o-mini">
-                <span>GPT mini</span>
-                <small>OpenAI</small>
-              </button>
-              <button type="button" data-endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions" data-model="qwen-plus">
-                <span>Qwen Plus</span>
-                <small>通义千问</small>
+              <button type="button" data-endpoint="https://open.bigmodel.cn/api/paas/v4/" data-model="glm-4-flash">
+                <span>智谱 GLM</span>
+                <small>glm-4-flash</small>
               </button>
             </div>
 
@@ -182,6 +171,22 @@
             </div>
             <p id="translator-status" class="translator-status">双栏对照使用 OpenAI 兼容接口，Base URL 可预填，API Key 需自行填写；句级译文缓存到本地 IndexedDB。</p>
           </div>
+        </section>
+
+        <section id="marks-panel" class="marks-panel" aria-label="标记列表" hidden>
+          <div class="marks-head">
+            <strong>标记</strong>
+            <button id="marks-close" class="ghost-button" type="button">关闭</button>
+          </div>
+          <div id="marks-filter" class="marks-filter" role="tablist" aria-label="标记筛选">
+            <button class="marks-filter-tab active" type="button" data-filter="all">全部</button>
+            <button class="marks-filter-tab" type="button" data-filter="bookmark">仅书签</button>
+            <button class="marks-filter-tab" type="button" data-filter="vocab">生词</button>
+            <button class="marks-filter-tab" type="button" data-filter="good">好句</button>
+            <button class="marks-filter-tab" type="button" data-filter="hard">难句</button>
+            <button class="marks-filter-tab" type="button" data-filter="grammar">语法</button>
+          </div>
+          <div id="marks-list" class="marks-list"></div>
         </section>
 
         <footer id="reading-controls" class="reading-controls" aria-label="阅读设置">

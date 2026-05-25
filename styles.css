@@ -423,6 +423,14 @@ button {
   padding: 0 12px;
 }
 
+/* 紧凑图标按钮（如"标记列表"），用比文字按钮窄一点的宽度省空间 */
+.tool-button.tool-icon {
+  min-width: 32px;
+  padding: 0 8px;
+  font-size: 16px;
+  line-height: 1;
+}
+
 .tool-button.active {
   border-color: var(--accent);
   background: var(--accent-soft);
@@ -619,6 +627,246 @@ button {
 
 .sentence-pair[data-status="loading"] .translated-cell {
   color: var(--muted);
+}
+
+/* 标记列表面板，沿用 .translator-panel 的位置/边框/阴影方案 */
+.marks-panel {
+  position: absolute;
+  z-index: 6;
+  top: 74px;
+  right: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(420px, calc(100% - 44px));
+  max-height: calc(100vh - 164px);
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.marks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.marks-head strong {
+  font-size: 18px;
+}
+
+.marks-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.marks-filter-tab {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.marks-filter-tab.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.marks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 60px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.marks-empty {
+  margin: 18px 0;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+}
+
+.mark-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--reader-bg);
+}
+
+.mark-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mark-chapter {
+  font-weight: 600;
+  color: var(--reader-ink);
+  /* 长章节标题省略号 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.mark-tag {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mark-tag.tag-bookmark {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.mark-tag.tag-vocab {
+  border-color: #c79a3a;
+  background: #fbf3df;
+  color: #7a5c18;
+}
+
+.mark-tag.tag-good {
+  border-color: #5aa37a;
+  background: #e2f1e8;
+  color: #2f6f4d;
+}
+
+.mark-tag.tag-hard {
+  border-color: #c47576;
+  background: #f8e3e3;
+  color: #8a3a3b;
+}
+
+.mark-tag.tag-grammar {
+  border-color: #6f8db9;
+  background: #e1ebf7;
+  color: #3a5a8a;
+}
+
+.mark-text {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent-soft);
+  color: var(--reader-ink);
+  font-size: 14px;
+  font-style: italic;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.mark-comment {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.mark-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mark-actions button {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mark-actions button:hover {
+  border-color: var(--accent);
+  color: var(--reader-ink);
+}
+
+.mark-actions .mark-delete:hover {
+  border-color: #a83c2f;
+  color: #a83c2f;
+}
+
+/* 正文右键菜单：选了字就 5 项标签，没选只有"加书签" */
+.mark-context-menu {
+  position: fixed;
+  z-index: 110;
+  min-width: 160px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.mark-context-menu-item {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  color: var(--reader-ink);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mark-context-menu-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+/* 一过性提示（如"已恢复阅读位置"），底部居中浮出，2s 后淡出 */
+.rt-toast {
+  position: fixed;
+  z-index: 200;
+  bottom: 32px;
+  left: 50%;
+  padding: 10px 18px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 12px);
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease;
+}
+
+.rt-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 /* 选中英文单词/短语后浮在选区附近的查词弹窗 */
