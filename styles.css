@@ -54,10 +54,6 @@ button {
   cursor: pointer;
 }
 
-[hidden] {
-  display: none !important;
-}
-
 .app-shell {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
@@ -650,6 +646,10 @@ button {
   background: color-mix(in srgb, var(--panel) 96%, transparent);
   box-shadow: var(--shadow);
   overflow: hidden;
+}
+
+.marks-panel[hidden] {
+  display: none;
 }
 
 .marks-head {
