@@ -614,6 +614,7 @@ function renderReader() {
 
   virtualBook = buildVirtualBook();
   dom.reader.replaceChildren(createVirtualReaderShell());
+  virtualBook.renderedRange = [-1, -1];
   restoreScroll(state.scrollTop || state.scrollByChapter[state.currentChapterIndex] || 0);
   renderVirtualWindow();
   updateCurrentChapterFromScroll();
@@ -2780,14 +2781,16 @@ function toggleMarksPanel() {
 function openMarksPanel() {
   if (state.translator.panelOpen) closeTranslatorPanel();
   marksPanelOpen = true;
-  dom.marksPanel.hidden = false;
+  dom.marksPanel.classList.add("open");
+  dom.marksPanel.setAttribute("aria-hidden", "false");
   dom.marksButton.classList.add("active");
   renderMarksList();
 }
 
 function closeMarksPanel() {
   marksPanelOpen = false;
-  dom.marksPanel.hidden = true;
+  dom.marksPanel.classList.remove("open");
+  dom.marksPanel.setAttribute("aria-hidden", "true");
   dom.marksButton.classList.remove("active");
 }
 

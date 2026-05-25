@@ -635,7 +635,7 @@ button {
   z-index: 6;
   top: 74px;
   right: 22px;
-  display: flex;
+  display: none;
   flex-direction: column;
   gap: 12px;
   width: min(420px, calc(100% - 44px));
@@ -648,8 +648,8 @@ button {
   overflow: hidden;
 }
 
-.marks-panel[hidden] {
-  display: none;
+.marks-panel.open {
+  display: flex;
 }
 
 .marks-head {
