@@ -123,7 +123,9 @@ let focusedSentenceKey = null;
 //   "translated" —— 反过来
 let focusedSentenceSide = null;
 
-init();
+// init() 的调用挪到文件最底部，让所有模块级 let/const 都先完成初始化。
+// 之前放在这里时，init() 内的 showToast 会访问下面才声明的 let toastHideTimer，
+// 触发 TDZ ReferenceError，连带让整个模块加载中断、后续按钮全废。
 
 function init() {
   applySettings();
@@ -3172,3 +3174,7 @@ function showToast(message, duration = 2000) {
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
+
+// 必须放在最底部：保证 toastHideTimer / marksPanelOpen / currentLookupPopup 等
+// 模块级 let 声明都先初始化完，init() 里调用 showToast 等才不会撞上 TDZ。
+init();
