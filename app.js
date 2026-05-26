@@ -906,18 +906,41 @@ function isParallelTranslationEnabled() {
   return state.translator.parallelMode || state.translator.view === "parallel";
 }
 
+// 双栏对照：每段一个 block，段内按句切成 pieces。
+// 保留原书的段落形态，避免每句独立成段后失去阅读节奏；
+// 仍允许逐句点击/选中触发对侧高亮（按 piece 的 cacheKey 对齐）。
 function getChapterSentencePairs(chapter, chapterIndex) {
-  const sentences = splitSentences(chapter.text);
+  const paragraphs = splitParagraphs(chapter.text);
+  let runningSentenceIndex = 0;
 
-  return sentences.map((text, sentenceIndex) => ({
-    type: "sentence-pair",
-    kind: "parallel",
-    chapterIndex,
-    sentenceIndex,
-    paragraphIndex: sentenceIndex,
-    text,
-    cacheKey: createSentenceCacheKey(text),
-  }));
+  return paragraphs
+    .map((paragraphText, paragraphIndex) => {
+      const sentences = splitSentences(paragraphText)
+        .map((text) => text.trim())
+        .filter(Boolean);
+      if (!sentences.length) return null;
+
+      const pieces = sentences.map((text) => {
+        const piece = {
+          text,
+          sentenceIndex: runningSentenceIndex,
+          cacheKey: createSentenceCacheKey(text),
+        };
+        runningSentenceIndex += 1;
+        return piece;
+      });
+
+      return {
+        type: "paragraph-pair",
+        kind: "parallel",
+        chapterIndex,
+        paragraphIndex,
+        sentences: pieces,
+        // 估高用：拼接后的段落原文长度
+        text: sentences.join(" "),
+      };
+    })
+    .filter(Boolean);
 }
 
 // 将一段文本切成"一句一行"。
@@ -1044,9 +1067,10 @@ function estimateParagraphHeight(text, metrics, kind) {
 }
 
 function estimateBlockHeight(block, metrics) {
-  if (block.type === "sentence-pair") {
+  if (block.type === "paragraph-pair") {
     const columnWidth = Math.max(220, (metrics.width - 28) / 2);
     const charsPerLine = Math.max(10, Math.floor(columnWidth / (metrics.fontSize * 0.95)));
+    // 段落总长：两栏理论上等长，取原文长度做估算即可
     const lines = Math.max(1, Math.ceil(block.text.length / charsPerLine));
     return Math.ceil(lines * metrics.fontSize * metrics.lineHeight + metrics.fontSize * 1.4);
   }
@@ -1175,8 +1199,8 @@ function renderVirtualWindow() {
 }
 
 function createVirtualBlock(block, index) {
-  if (block.type === "sentence-pair") {
-    return createSentencePairBlock(block, index);
+  if (block.type === "paragraph-pair") {
+    return createParagraphPairBlock(block, index);
   }
 
   const paragraph = createParagraph(block.text, block.kind);
@@ -1184,30 +1208,15 @@ function createVirtualBlock(block, index) {
   return paragraph;
 }
 
-function createSentencePairBlock(block, index) {
+// 段落对：一行 = 一段，段内由多个 .sentence-piece 流式排版，
+// 这样视觉上保留原书段落形态，同时每个句子仍可独立点击/高亮
+function createParagraphPairBlock(block, index) {
   const row = document.createElement("div");
   row.className = "sentence-pair";
   row.dataset.virtualIndex = String(index);
-  row.dataset.cacheKey = block.cacheKey;
-  // 虚拟列表滚动后重新创建的句对，若就是当前焦点行，应恢复行级与对侧栏的高亮
-  const isFocusedRow = Boolean(block.cacheKey) && block.cacheKey === focusedSentenceKey;
-  if (isFocusedRow) {
-    row.classList.add("is-focused");
-  }
 
-  const original = document.createElement("p");
-  original.className = "sentence-cell original-cell";
-  original.textContent = block.text;
-  if (isFocusedRow && focusedSentenceSide === "original") {
-    original.classList.add("is-cell-focused");
-  }
-
-  const translated = document.createElement("p");
-  translated.className = "sentence-cell translated-cell";
-  translated.textContent = getSentenceMemoryValue(block.cacheKey) || "翻译中...";
-  if (isFocusedRow && focusedSentenceSide === "translated") {
-    translated.classList.add("is-cell-focused");
-  }
+  const original = createParagraphCell(block, "original");
+  const translated = createParagraphCell(block, "translated");
 
   if (state.translator.swapColumns) {
     row.append(translated, original);
@@ -1216,6 +1225,40 @@ function createSentencePairBlock(block, index) {
   }
 
   return row;
+}
+
+function createParagraphCell(block, side) {
+  const cell = document.createElement("p");
+  cell.className = `sentence-cell ${side}-cell`;
+  block.sentences.forEach((sentence, pieceIndex) => {
+    // 英文/混排相邻句子之间需要空格；CJK 句末标点（。！？；…）紧贴下一句更自然
+    if (pieceIndex > 0) {
+      const prevEnd = (block.sentences[pieceIndex - 1].text || "").slice(-1);
+      if (prevEnd && !/[。！？；…]/.test(prevEnd)) cell.append(" ");
+    }
+    const piece = document.createElement("span");
+    piece.className = "sentence-piece";
+    piece.dataset.cacheKey = sentence.cacheKey;
+    piece.dataset.side = side;
+    if (side === "translated") {
+      const cached = getSentenceMemoryValue(sentence.cacheKey);
+      piece.textContent = cached || "翻译中...";
+      piece.dataset.status = cached ? "ready" : "loading";
+    } else {
+      piece.textContent = sentence.text;
+      piece.dataset.status = "ready";
+    }
+    // 虚拟滚动重建时恢复焦点高亮
+    if (
+      focusedSentenceKey &&
+      sentence.cacheKey === focusedSentenceKey &&
+      focusedSentenceSide === side
+    ) {
+      piece.classList.add("is-piece-focused");
+    }
+    cell.append(piece);
+  });
+  return cell;
 }
 
 function getSentenceMemoryValue(key) {
@@ -1278,32 +1321,32 @@ function hydrateVisibleSentenceTranslations(windowNode) {
   rows.forEach((row) => {
     const index = Number(row.dataset.virtualIndex);
     const block = virtualBook.blocks[index];
-    if (!block || !block.cacheKey) return;
-    hydrateSentenceRow(row, block);
+    if (!block || block.type !== "paragraph-pair") return;
+    block.sentences.forEach((piece) => hydrateSentencePiece(piece));
   });
 }
 
-async function hydrateSentenceRow(row, block) {
-  const cached = sentenceTranslationMemory.get(block.cacheKey) || (await getCachedSentenceTranslation(block.cacheKey));
+async function hydrateSentencePiece(piece) {
+  const cached = sentenceTranslationMemory.get(piece.cacheKey) || (await getCachedSentenceTranslation(piece.cacheKey));
 
   if (cached) {
-    updateSentenceRow(row, cached, "ready");
+    updateRenderedSentence(piece.cacheKey, cached, "ready");
     return;
   }
 
   if (!canUseParallelTranslator()) {
-    updateSentenceRow(row, "请在翻译设置中填写 API Key 和模型名。", "missing");
+    updateRenderedSentence(piece.cacheKey, "请在翻译设置中填写 API Key 和模型名。", "missing");
     return;
   }
 
-  queueSentenceTranslation(block);
+  queueSentenceTranslation(piece);
 }
 
-function updateSentenceRow(row, text, status) {
-  const cell = row.querySelector(".translated-cell");
-  if (!cell) return;
-  cell.textContent = text;
-  row.dataset.status = status;
+// 译文按 piece 替换：在已渲染 DOM 里找 cacheKey 对应的"译文侧"span，
+// 替换其文本和状态。原文侧的 piece 不动。
+function updateSentencePiece(piece, text, status) {
+  piece.textContent = text;
+  piece.dataset.status = status;
 }
 
 function canUseParallelTranslator() {
@@ -1391,8 +1434,9 @@ function legacyQueueSentenceTranslation(block) {
 }
 
 function updateRenderedSentence(cacheKey, translation, status = "ready") {
-  dom.reader.querySelectorAll(`.sentence-pair[data-cache-key="${cssEscape(cacheKey)}"]`).forEach((row) => {
-    updateSentenceRow(row, translation, status);
+  const selector = `.sentence-piece[data-side="translated"][data-cache-key="${cssEscape(cacheKey)}"]`;
+  dom.reader.querySelectorAll(selector).forEach((piece) => {
+    updateSentencePiece(piece, translation, status);
   });
 }
 
@@ -1849,12 +1893,17 @@ function translateVisibleSentences() {
   }
 
   const rows = [...dom.reader.querySelectorAll(".sentence-pair")];
+  let pieceCount = 0;
   rows.forEach((row) => {
     const index = Number(row.dataset.virtualIndex);
     const block = virtualBook.blocks[index];
-    if (block) queueSentenceTranslation(block);
+    if (!block || block.type !== "paragraph-pair") return;
+    block.sentences.forEach((piece) => {
+      queueSentenceTranslation(piece);
+      pieceCount += 1;
+    });
   });
-  setTranslatorStatus(`已提交 ${rows.length} 个可见句子进行翻译。`, "loading");
+  setTranslatorStatus(`已提交 ${pieceCount} 个可见句子进行翻译。`, "loading");
 }
 
 function translateParagraphs(paragraphs, title) {
@@ -2298,13 +2347,13 @@ function clearCurrentTranslation() {
 }
 
 function clearVisibleSentenceTranslations() {
-  dom.reader.querySelectorAll(".sentence-pair").forEach((row) => {
-    const key = row.dataset.cacheKey;
-    if (key) {
-      sentenceTranslationMemory.delete(key);
-    }
-    updateSentenceRow(row, "翻译中...", "loading");
-  });
+  dom.reader
+    .querySelectorAll('.sentence-piece[data-side="translated"]')
+    .forEach((piece) => {
+      const key = piece.dataset.cacheKey;
+      if (key) sentenceTranslationMemory.delete(key);
+      updateSentencePiece(piece, "翻译中...", "loading");
+    });
   setTranslatorStatus("已清除当前可见句子的内存译文；IndexedDB 缓存会继续避免重复消耗。", "success");
 }
 
@@ -2497,7 +2546,8 @@ function toggleSidebar() {
 
 // ============ 双栏翻译模式：点击/选中 → 高亮对侧句子 ============
 
-// 点击任一句对：在哪一侧点，就把对侧那一栏高亮；同一侧再点取消；点不同行/侧切换
+// 点击任一句 piece：在哪一侧点，就把对侧同 cacheKey 的句子高亮；
+// 同一侧再点取消；点不同句切换
 function handleSentencePairFocus(event) {
   if (!isParallelTranslationEnabled()) return;
   // 用户正在拖选文本时交给 mouseup 处理，这里跳过
@@ -2507,13 +2557,12 @@ function handleSentencePairFocus(event) {
   }
   if (event.target.closest(".parallel-divider")) return;
 
-  const cell = event.target.closest(".sentence-cell");
-  const row = event.target.closest(".sentence-pair");
-  if (!row || !dom.reader.contains(row)) return;
+  const piece = event.target.closest(".sentence-piece");
+  if (!piece || !dom.reader.contains(piece)) return;
 
-  const key = row.dataset.cacheKey || "";
-  const targetSide = getOppositeSideOfCell(cell);
-  if (!targetSide) return; // 点在了中缝/空白，没有明确的"对侧"
+  const key = piece.dataset.cacheKey || "";
+  const targetSide = getOppositeSide(piece.dataset.side);
+  if (!key || !targetSide) return;
 
   if (focusedSentenceKey === key && focusedSentenceSide === targetSide) {
     focusedSentenceKey = null;
@@ -2525,23 +2574,20 @@ function handleSentencePairFocus(event) {
   applySentenceFocus();
 }
 
-// 鼠标拖选文本结束：在哪一侧选，就高亮对侧那一栏
+// 鼠标拖选文本结束：在哪一侧选，就高亮对侧同 cacheKey 的句子
 function handleSelectionFocus() {
   if (!isParallelTranslationEnabled()) return;
   const selection = window.getSelection?.();
   if (!selection || selection.isCollapsed) return;
   if (!String(selection).trim()) return;
 
-  const anchorCell = findSentenceCellFromNode(selection.anchorNode);
-  const focusCell = findSentenceCellFromNode(selection.focusNode);
-  // 选区跨多个单元格时不切换焦点，避免误判
-  if (!anchorCell || anchorCell !== focusCell) return;
+  const anchorPiece = findSentencePieceFromNode(selection.anchorNode);
+  const focusPiece = findSentencePieceFromNode(selection.focusNode);
+  // 选区跨多个 piece 时不切换焦点，避免误判
+  if (!anchorPiece || anchorPiece !== focusPiece) return;
 
-  const row = anchorCell.closest(".sentence-pair");
-  if (!row) return;
-
-  const key = row.dataset.cacheKey || "";
-  const targetSide = getOppositeSideOfCell(anchorCell);
+  const key = anchorPiece.dataset.cacheKey || "";
+  const targetSide = getOppositeSide(anchorPiece.dataset.side);
   if (!key || !targetSide) return;
 
   if (focusedSentenceKey !== key || focusedSentenceSide !== targetSide) {
@@ -2551,31 +2597,28 @@ function handleSelectionFocus() {
   }
 }
 
-// 同步行级 .is-focused 与目标侧单元格的 .is-cell-focused
+// 同步 piece 级 .is-piece-focused：只有命中 cacheKey + side 的 span 被高亮
 function applySentenceFocus() {
-  dom.reader.querySelectorAll(".sentence-pair").forEach((row) => {
-    const isRow = Boolean(focusedSentenceKey) && row.dataset.cacheKey === focusedSentenceKey;
-    row.classList.toggle("is-focused", isRow);
-    row.querySelectorAll(".sentence-cell").forEach((cell) => {
-      const isTarget = isRow && focusedSentenceSide && cell.classList.contains(`${focusedSentenceSide}-cell`);
-      cell.classList.toggle("is-cell-focused", Boolean(isTarget));
-    });
+  dom.reader.querySelectorAll(".sentence-piece").forEach((piece) => {
+    const isTarget =
+      Boolean(focusedSentenceKey) &&
+      piece.dataset.cacheKey === focusedSentenceKey &&
+      piece.dataset.side === focusedSentenceSide;
+    piece.classList.toggle("is-piece-focused", isTarget);
   });
 }
 
-// 根据点击/选中所在的单元格，返回需要高亮的"对侧" side 名
-function getOppositeSideOfCell(cell) {
-  if (!cell) return null;
-  if (cell.classList.contains("original-cell")) return "translated";
-  if (cell.classList.contains("translated-cell")) return "original";
+function getOppositeSide(side) {
+  if (side === "original") return "translated";
+  if (side === "translated") return "original";
   return null;
 }
 
-// 从 Selection 端点节点向上找到所在的 .sentence-cell
-function findSentenceCellFromNode(node) {
+// 从 Selection 端点节点向上找到所在的 .sentence-piece
+function findSentencePieceFromNode(node) {
   if (!node) return null;
   const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-  return el?.closest?.(".sentence-cell") || null;
+  return el?.closest?.(".sentence-piece") || null;
 }
 
 // ============ 选中正文中的英文 → 弹出查词弹窗 ============

@@ -519,8 +519,7 @@ button {
   padding: 8px 12px;
   margin: 0 -12px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
-  /* 句对支持点击高亮，故可交互；同时给背景/边框加过渡 */
-  cursor: pointer;
+  /* 段落级容器只负责两栏对齐；点击交互移到段内的 .sentence-piece */
   border-radius: 6px;
   transition:
     background 0.15s ease,
@@ -528,26 +527,27 @@ button {
     box-shadow 0.15s ease;
 }
 
-/* 鼠标悬停未选中的句对：浅色提示可点击，不打扰阅读 */
-.sentence-pair:hover:not(.is-focused) {
-  background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
-}
-
-/* 行级浅高亮：只是淡淡提示"这一行是当前焦点"，真正强调放在对侧那一栏 */
-.sentence-pair.is-focused {
-  background: color-mix(in srgb, var(--accent-soft) 30%, transparent);
-}
-
-/* 单元格级强高亮：用户选中/点击哪一侧，对侧那一栏就用这个样式凸显出来 */
-.sentence-cell.is-cell-focused {
-  background: color-mix(in srgb, var(--accent-soft) 90%, transparent);
-  color: var(--accent-strong);
-  border-radius: 4px;
-  box-shadow: inset 0 0 0 2px var(--accent);
+/* 鼠标悬停某句 piece：淡色提示可点击 */
+.sentence-piece {
+  display: inline;
+  border-radius: 3px;
+  padding: 0 1px;
+  cursor: pointer;
   transition:
     background 0.15s ease,
     color 0.15s ease,
     box-shadow 0.15s ease;
+}
+
+.sentence-piece:hover:not(.is-piece-focused) {
+  background: color-mix(in srgb, var(--accent-soft) 45%, transparent);
+}
+
+/* piece 级强高亮：在哪一侧点 / 选，就高亮对侧同 cacheKey 的句子 */
+.sentence-piece.is-piece-focused {
+  background: color-mix(in srgb, var(--accent-soft) 95%, transparent);
+  color: var(--accent-strong);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 /* 鍙屾爮缈昏瘧妯″紡涓嬬殑鍙嫋鍔ㄥ垎鐣岀嚎锛堢嫭绔嬫诞灞傦紝瑕嗙洊鍦?virtual-reader 涓婏級 */
@@ -620,12 +620,12 @@ button {
   color: color-mix(in srgb, var(--reader-ink) 78%, var(--accent));
 }
 
-.sentence-pair[data-status="missing"] .translated-cell,
-.sentence-pair[data-status="error"] .translated-cell {
+.sentence-piece[data-side="translated"][data-status="missing"],
+.sentence-piece[data-side="translated"][data-status="error"] {
   color: #a83c2f;
 }
 
-.sentence-pair[data-status="loading"] .translated-cell {
+.sentence-piece[data-side="translated"][data-status="loading"] {
   color: var(--muted);
 }
 
