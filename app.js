@@ -321,10 +321,9 @@ async function parseEpubFile(file) {
       if (!text) continue;
 
       const title =
-        navTitleByHref.get(stripHash(href)) ||
+        lookupNavTitle(navTitleByHref, href) ||
         getEpubSectionTitle(doc) ||
-        item.label ||
-        href ||
+        (item.label && item.label.trim()) ||
         `第 ${chapters.length + 1} 节`;
 
       chapters.push({
@@ -353,15 +352,26 @@ async function parseEpubFile(file) {
   };
 }
 
-// 从 EPUB 的目录（nav 或 ncx）中收集 href → 标题 的映射
+// 从 EPUB 的目录（nav 或 ncx）中收集 href → 标题 的映射；
+// 同时索引完整路径和文件名两个 key，容忍 nav/spine 路径前缀差异
+// （nav 里可能是 OEBPS/text/chap1.xhtml，spine 里只是 chap1.xhtml）
 async function loadEpubNavTitles(book) {
   const map = new Map();
+  const addEntry = (href, label) => {
+    const text = (label || "").trim();
+    if (!text) return;
+    const key = stripHash(href);
+    if (!key) return;
+    if (!map.has(key)) map.set(key, text);
+    const base = key.split("/").pop();
+    if (base && !map.has(base)) map.set(base, text);
+  };
   try {
     const nav = await book.loaded.navigation;
     const toc = nav?.toc || [];
     const walk = (items) => {
       items.forEach((entry) => {
-        if (entry?.href) map.set(stripHash(entry.href), entry.label || "");
+        if (entry?.href) addEntry(entry.href, entry.label);
         if (Array.isArray(entry?.subitems) && entry.subitems.length) walk(entry.subitems);
       });
     };
@@ -375,6 +385,16 @@ async function loadEpubNavTitles(book) {
 // EPUB href 经常带 #fragment，做章节标题映射时要去掉
 function stripHash(href) {
   return String(href || "").split("#")[0];
+}
+
+// 用完整 href 和 basename 两种 key 查 nav 映射，匹配率更高
+function lookupNavTitle(map, href) {
+  if (!map || !href) return "";
+  const key = stripHash(href);
+  if (map.has(key)) return map.get(key);
+  const base = key.split("/").pop();
+  if (base && map.has(base)) return map.get(base);
+  return "";
 }
 
 async function parsePdfFile(file) {
@@ -415,11 +435,14 @@ async function parsePdfFile(file) {
 }
 
 function getEpubSectionTitle(doc) {
-  return (
-    doc.querySelector("h1, h2, h3, title")?.textContent ||
-    doc.querySelector("[epub\\:type='title']")?.textContent ||
-    ""
-  );
+  // 只从 body 里找标题元素：head 里的 <title> 几乎都是整本书名，
+  // 用它会让所有章节同名（"Rich Dad Poor Dad" 那种）
+  const root = doc.body || doc.documentElement || doc;
+  const heading = root.querySelector("h1, h2, h3, h4, h5, h6");
+  if (heading?.textContent?.trim()) return heading.textContent.trim();
+  const epubTitle = root.querySelector("[epub\\:type='title']");
+  if (epubTitle?.textContent?.trim()) return epubTitle.textContent.trim();
+  return "";
 }
 
 function getDocumentText(doc) {
