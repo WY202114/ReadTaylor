@@ -424,22 +424,19 @@ button {
    未读+当前句保持原色，眼睛跟"灰色逐步扩张"的分界即可，
    不会被频繁切换的 box 抢走焦点 */
 .tts-sentence {
-  transition:
-    color 0.1s ease,
-    opacity 0.1s ease,
-    background-color 0.1s ease,
-    box-shadow 0.1s ease;
+  /* 只在颜色通道过渡，避免 box-shadow/background 出现消失造成"闪一下" */
+  transition: color 0.18s ease, opacity 0.18s ease;
 }
 
 .tts-sentence.is-spoken {
   color: color-mix(in srgb, var(--reader-ink) 35%, transparent);
 }
 
+/* 当前句不再加强 box，只用 accent 强色突出 —— 段级背景已经提示了"哪段"，
+   句内只需颜色变化（默认 → 强色 → 灰）的平滑过渡 */
 .tts-sentence.is-active {
-  background-color: var(--accent-soft);
   color: var(--accent-strong);
-  border-radius: 4px;
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  font-weight: 600;
 }
 
 .reader-toolbar {

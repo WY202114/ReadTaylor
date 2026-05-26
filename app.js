@@ -3464,12 +3464,11 @@ const ttsState = {
   overlay: null,
   lastBlockIndex: -1, // 保存上次朗读的位置，以支持精准续读
   
-  // 备用计时器相关状态（针对不支持 onboundary 的浏览器环境）
+  // 备用计时器（与 onboundary 共同推进高亮，互不禁用，applyTtsSentenceHighlight 内单向前进）
   timerId: 0,
   startTime: 0,
   elapsedOffset: 0,
   sentenceEndTimes: [],
-  hasNativeBoundary: false,
 };
 let ttsVoices = [];
 let ttsResumeTimer = 0;
@@ -3572,31 +3571,35 @@ function clearTtsTimer() {
 }
 
 function updateTtsTimerProgress() {
-  // 如果浏览器原生 onboundary 已经触发过并证实可用，则立即禁用备用计时器以节省资源并避免冲突
-  if (ttsState.hasNativeBoundary) {
-    clearTtsTimer();
-    return;
-  }
-  
+  // 不再因为 onboundary 触发过就禁用备用计时器：onboundary 在某些 voice 上
+  // 只触发零星几次甚至不再触发，禁用计时器会导致高亮卡在首句。
+  // 改为双管齐下：boundary 和 timer 谁先发现更靠后的句子谁高亮（applyTtsSentenceHighlight 只前进不倒退）
   const overlay = ttsState.overlay;
   if (!overlay || !ttsState.sentenceEndTimes.length) return;
-  
+
   const elapsed = (performance.now() - ttsState.startTime) + ttsState.elapsedOffset;
   const rate = clamp(Number(state.settings.ttsRate) || 1, 0.5, 2.5);
   const elapsedAdjusted = elapsed * rate;
-  
+
   let idx = ttsState.sentenceEndTimes.findIndex((endTime) => elapsedAdjusted < endTime);
   if (idx < 0) {
     idx = ttsState.sentenceEndTimes.length - 1;
   }
-  
-  if (idx !== ttsState.sentenceIndex) {
-    ttsState.sentenceIndex = idx;
-    overlay.sentences.forEach((s, i) => {
-      s.el.classList.toggle("is-active", i === idx);
-      s.el.classList.toggle("is-spoken", i < idx);
-    });
-  }
+  applyTtsSentenceHighlight(idx);
+}
+
+// 朗读句级高亮"只前进不倒退"：boundary 和 timer 都会调用，
+// 谁先到更靠后的句子就推进；倒退或同句直接忽略，避免来回闪
+function applyTtsSentenceHighlight(idx) {
+  const overlay = ttsState.overlay;
+  if (!overlay) return;
+  if (typeof idx !== "number" || idx < 0) return;
+  if (idx <= ttsState.sentenceIndex) return;
+  ttsState.sentenceIndex = idx;
+  overlay.sentences.forEach((s, i) => {
+    s.el.classList.toggle("is-active", i === idx);
+    s.el.classList.toggle("is-spoken", i < idx);
+  });
 }
 
 function togglePauseTts() {
@@ -3656,7 +3659,6 @@ function speakCurrentTtsBlock() {
 
   // 初始化备用计时器状态（不立即开启，等待真正发音时开启）
   ttsState.elapsedOffset = 0;
-  ttsState.hasNativeBoundary = false;
   clearTtsTimer();
 
   const utterance = new SpeechSynthesisUtterance(text);
@@ -3814,24 +3816,18 @@ function setupTtsBoundary(utterance, text) {
     if (!overlay) return;
     const charIndex = event.charIndex;
     if (typeof charIndex !== "number") return;
-    
-    // 标记原生 boundary 可用，使 fallback 计时器停止覆写高亮
-    ttsState.hasNativeBoundary = true;
-    
+
     let idx = overlay.sentences.findIndex((s) => charIndex >= s.start && charIndex < s.end);
     if (idx < 0) {
-      // 容错：若恰好落在句子间隙（如空格或句尾标点），则取当前 charIndex 之前的最后一句
+      // 容错：恰好落在句子间隙（空格/句尾标点），取 charIndex 之前的最后一句
       idx = overlay.sentences.findIndex((s, i) => {
         const next = overlay.sentences[i + 1];
         return charIndex >= s.start && (!next || charIndex < next.start);
       });
     }
     if (idx < 0) return;
-    ttsState.sentenceIndex = idx;
-    overlay.sentences.forEach((s, i) => {
-      s.el.classList.toggle("is-active", i === idx);
-      s.el.classList.toggle("is-spoken", i < idx);
-    });
+    // 走统一路径"只前进不倒退"，与备用 timer 共用，避免互相干扰
+    applyTtsSentenceHighlight(idx);
   };
 }
 
