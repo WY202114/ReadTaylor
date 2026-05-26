@@ -65,6 +65,8 @@
             <button id="immersive-toggle" class="tool-button" type="button">沉浸</button>
             <!-- 翻译按钮：左键开关；右键或长按打开设置面板 -->
             <button id="translate-toggle" class="tool-button" type="button" title="点击开启/关闭翻译；右键或长按打开翻译设置">翻译</button>
+            <!-- 全文搜索：在整本书中搜词/句，点结果跳到对应段落 -->
+            <button id="search-button" class="tool-button" type="button" title="在本书中搜索">搜索</button>
             <!-- 目录：打开本书章节列表，点击章节跳转 -->
             <button id="toc-button" class="tool-button" type="button" title="打开本书目录">目录</button>
             <!-- 我的书签：打开列表面板；加书签 / 加标记走正文右键菜单 -->
@@ -173,6 +175,18 @@
             </div>
             <p id="translator-status" class="translator-status">双栏对照使用 OpenAI 兼容接口，Base URL 可预填，API Key 需自行填写；句级译文缓存到本地 IndexedDB。</p>
           </div>
+        </section>
+
+        <section id="search-panel" class="marks-panel search-panel" aria-label="全文搜索" hidden>
+          <div class="marks-head">
+            <strong>搜索</strong>
+            <button id="search-close" class="ghost-button" type="button">关闭</button>
+          </div>
+          <div class="search-input-row">
+            <input id="search-input" type="search" placeholder="输入要搜索的词或句子" autocomplete="off" />
+            <span id="search-summary" class="search-summary"></span>
+          </div>
+          <div id="search-results" class="search-results" role="list"></div>
         </section>
 
         <section id="toc-panel" class="marks-panel toc-panel" aria-label="目录" hidden>

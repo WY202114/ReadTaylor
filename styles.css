@@ -697,6 +697,95 @@ button {
   padding-right: 2px;
 }
 
+/* 搜索面板：输入框 + 命中片段列表 */
+.search-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.search-input-row input {
+  flex: 1;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  color: var(--reader-ink);
+  font-size: 14px;
+}
+
+.search-input-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.search-summary {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 60px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.search-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--reader-bg);
+  text-align: left;
+  color: var(--reader-ink);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.5;
+  width: 100%;
+}
+
+.search-result:hover {
+  border-color: var(--accent);
+  background: var(--panel-soft);
+}
+
+.search-result-chapter {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-snippet {
+  /* 命中片段：保留必要的空白但允许换行 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.search-hit {
+  background: color-mix(in srgb, var(--accent-soft) 90%, transparent);
+  color: var(--accent-strong);
+  border-radius: 3px;
+  padding: 0 2px;
+  font-weight: 600;
+}
+
+.search-empty {
+  margin: 18px 0;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+}
+
 /* 目录列表：紧凑一些，便于一屏看到更多章节 */
 .toc-list {
   display: flex;

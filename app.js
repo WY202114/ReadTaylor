@@ -59,6 +59,12 @@ const dom = {
   tocPanel: document.querySelector("#toc-panel"),
   tocClose: document.querySelector("#toc-close"),
   tocList: document.querySelector("#toc-list"),
+  searchButton: document.querySelector("#search-button"),
+  searchPanel: document.querySelector("#search-panel"),
+  searchClose: document.querySelector("#search-close"),
+  searchInput: document.querySelector("#search-input"),
+  searchSummary: document.querySelector("#search-summary"),
+  searchResults: document.querySelector("#search-results"),
   settingsToggle: document.querySelector("#settings-toggle"),
   sidebarToggle: document.querySelector("#sidebar-toggle"),
   fontSize: document.querySelector("#font-size"),
@@ -161,6 +167,10 @@ function bindEvents() {
   dom.tocButton.addEventListener("click", toggleTocPanel);
   dom.tocClose.addEventListener("click", closeTocPanel);
   dom.tocList.addEventListener("click", handleTocListClick);
+  dom.searchButton.addEventListener("click", toggleSearchPanel);
+  dom.searchClose.addEventListener("click", closeSearchPanel);
+  dom.searchInput.addEventListener("input", handleSearchInput);
+  dom.searchResults.addEventListener("click", handleSearchResultClick);
   // 正文里右键 → 弹出加标记菜单（书签 / 生词 / 好句 / 难句 / 语法）
   dom.reader.addEventListener("contextmenu", handleReaderContextMenu);
   dom.restoreBookmark.addEventListener("click", restoreBookmark);
@@ -648,6 +658,8 @@ function renderAll() {
   updateProgress();
   // 目录面板开着时换书要立即刷新章节列表，否则会停留在上一本书的目录
   if (tocPanelOpen) renderTocList();
+  // 搜索面板开着时换书，旧的搜索结果属于上一本书，重新跑一次（输入框内容保留）
+  if (searchPanelOpen) renderSearchResults(dom.searchInput.value || "");
 }
 
 function renderBook() {
@@ -1572,6 +1584,7 @@ function updateButtons() {
   dom.immersiveToggle.classList.toggle("active", state.immersive);
   dom.marksButton.disabled = !hasBook;
   dom.tocButton.disabled = !hasBook;
+  dom.searchButton.disabled = !hasBook;
   dom.restoreBookmark.disabled = !hasBook || !state.bookmark;
   dom.translateChapter.disabled = !hasBook;
   dom.clearTranslation.disabled = !hasBook || !getCurrentTranslation();
@@ -1589,6 +1602,7 @@ async function setImmersiveMode(enabled) {
     applyTranslatorSettings();
     closeMarksPanel();
     closeTocPanel();
+    closeSearchPanel();
     closeMarkContextMenu();
     await enterBrowserFullscreen();
   } else {
@@ -1622,9 +1636,10 @@ async function exitBrowserFullscreen() {
 
 function toggleTranslatorPanel() {
   state.translator.panelOpen = !state.translator.panelOpen;
-  // 翻译面板和标记/目录面板同位（右上浮层），同时只展示一个，避免叠在一起
+  // 翻译/标记/目录/搜索面板同位（右上浮层），同时只展示一个
   if (state.translator.panelOpen && marksPanelOpen) closeMarksPanel();
   if (state.translator.panelOpen && tocPanelOpen) closeTocPanel();
+  if (state.translator.panelOpen && searchPanelOpen) closeSearchPanel();
   applyTranslatorSettings();
   saveState();
 }
@@ -2828,6 +2843,7 @@ const MARK_TAG_LABELS = {
 let marksPanelOpen = false;
 let marksFilter = "all";
 let tocPanelOpen = false;
+let searchPanelOpen = false;
 
 // 在指定 block 上追加一条 mark。type/tag 决定它是书签还是哪种标签的笔记。
 // overrideText 不为空时（一般是用户的选中文字）会用它作为 selectedText，
@@ -3027,6 +3043,7 @@ function toggleMarksPanel() {
 function openMarksPanel() {
   if (state.translator.panelOpen) closeTranslatorPanel();
   if (tocPanelOpen) closeTocPanel();
+  if (searchPanelOpen) closeSearchPanel();
   marksPanelOpen = true;
   dom.marksPanel.hidden = false;
   dom.marksButton.classList.add("active");
@@ -3051,6 +3068,7 @@ function toggleTocPanel() {
 function openTocPanel() {
   if (state.translator.panelOpen) closeTranslatorPanel();
   if (marksPanelOpen) closeMarksPanel();
+  if (searchPanelOpen) closeSearchPanel();
   tocPanelOpen = true;
   dom.tocPanel.hidden = false;
   dom.tocButton.classList.add("active");
@@ -3118,6 +3136,187 @@ function highlightTocActive() {
     const isActive = Number(item.dataset.index) === state.currentChapterIndex;
     item.classList.toggle("active", isActive);
   });
+}
+
+// ============ 全文搜索：扫所有章节段落，点结果跳到对应 block ============
+
+const SEARCH_DEBOUNCE_MS = 220;
+const SEARCH_MAX_RESULTS = 200;
+const SEARCH_SNIPPET_RADIUS = 36;
+let searchDebounceTimer = 0;
+
+function toggleSearchPanel() {
+  if (searchPanelOpen) {
+    closeSearchPanel();
+  } else {
+    openSearchPanel();
+  }
+}
+
+function openSearchPanel() {
+  if (state.translator.panelOpen) closeTranslatorPanel();
+  if (marksPanelOpen) closeMarksPanel();
+  if (tocPanelOpen) closeTocPanel();
+  searchPanelOpen = true;
+  dom.searchPanel.hidden = false;
+  dom.searchButton.classList.add("active");
+  // 打开就聚焦输入框，方便直接打字
+  dom.searchInput.focus();
+  dom.searchInput.select();
+  renderSearchResults(dom.searchInput.value || "");
+}
+
+function closeSearchPanel() {
+  searchPanelOpen = false;
+  dom.searchPanel.hidden = true;
+  dom.searchButton.classList.remove("active");
+}
+
+function handleSearchInput(event) {
+  clearTimeout(searchDebounceTimer);
+  const value = event.target.value;
+  searchDebounceTimer = setTimeout(() => renderSearchResults(value), SEARCH_DEBOUNCE_MS);
+}
+
+function renderSearchResults(query) {
+  const list = dom.searchResults;
+  list.replaceChildren();
+  const trimmed = query.trim();
+
+  if (!state.chapters.length) {
+    dom.searchSummary.textContent = "";
+    list.append(buildSearchEmpty("先导入一本书才能搜索。"));
+    return;
+  }
+  if (!trimmed) {
+    dom.searchSummary.textContent = "";
+    list.append(buildSearchEmpty("输入关键词开始搜索（不区分大小写）。"));
+    return;
+  }
+
+  const { results, total, truncated } = searchInBook(trimmed);
+  if (!results.length) {
+    dom.searchSummary.textContent = "";
+    list.append(buildSearchEmpty(`没有找到 "${trimmed}"。`));
+    return;
+  }
+
+  dom.searchSummary.textContent = truncated
+    ? `${total}+ 处，只显示前 ${SEARCH_MAX_RESULTS}`
+    : `${total} 处`;
+
+  const fragment = document.createDocumentFragment();
+  results.forEach((hit) => fragment.append(buildSearchResultItem(hit, trimmed)));
+  list.append(fragment);
+}
+
+function buildSearchEmpty(text) {
+  const p = document.createElement("p");
+  p.className = "search-empty";
+  p.textContent = text;
+  return p;
+}
+
+// 在所有章节的段落里做大小写不敏感的 indexOf 搜索；
+// 同一段多次命中只取第一处（保持结果列表精简），需要更精细可后续按 hit 序列出
+function searchInBook(query) {
+  const needle = query.toLowerCase();
+  const results = [];
+  let total = 0;
+
+  for (let ci = 0; ci < state.chapters.length; ci += 1) {
+    const chapter = state.chapters[ci];
+    const paragraphs = splitParagraphs(chapter.text || "");
+    for (let pi = 0; pi < paragraphs.length; pi += 1) {
+      const paragraph = paragraphs[pi];
+      const lower = paragraph.toLowerCase();
+      let from = 0;
+      let hitInParagraph = 0;
+      while (from <= lower.length) {
+        const idx = lower.indexOf(needle, from);
+        if (idx === -1) break;
+        total += 1;
+        if (hitInParagraph === 0 && results.length < SEARCH_MAX_RESULTS) {
+          results.push({
+            chapterIndex: ci,
+            chapterTitle: chapter.title || `第 ${ci + 1} 章`,
+            paragraphIndex: pi,
+            paragraph,
+            matchStart: idx,
+            matchLength: query.length,
+          });
+        }
+        hitInParagraph += 1;
+        from = idx + Math.max(1, query.length);
+      }
+    }
+  }
+
+  return { results, total, truncated: total > results.length };
+}
+
+function buildSearchResultItem(hit, query) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "search-result";
+  item.dataset.chapterIndex = String(hit.chapterIndex);
+  item.dataset.paragraphIndex = String(hit.paragraphIndex);
+  item.setAttribute("role", "listitem");
+
+  const chapter = document.createElement("div");
+  chapter.className = "search-result-chapter";
+  chapter.textContent = `${hit.chapterIndex + 1}. ${hit.chapterTitle}`;
+
+  const snippet = document.createElement("div");
+  snippet.className = "search-result-snippet";
+  appendSnippetWithHighlight(snippet, hit, query);
+
+  item.append(chapter, snippet);
+  return item;
+}
+
+// 命中位置 ± SEARCH_SNIPPET_RADIUS 字符作为预览，关键词包成 .search-hit 高亮
+function appendSnippetWithHighlight(container, hit, query) {
+  const start = Math.max(0, hit.matchStart - SEARCH_SNIPPET_RADIUS);
+  const end = Math.min(hit.paragraph.length, hit.matchStart + hit.matchLength + SEARCH_SNIPPET_RADIUS);
+  const prefix = (start > 0 ? "…" : "") + hit.paragraph.slice(start, hit.matchStart);
+  const matched = hit.paragraph.slice(hit.matchStart, hit.matchStart + hit.matchLength);
+  const suffix = hit.paragraph.slice(hit.matchStart + hit.matchLength, end) + (end < hit.paragraph.length ? "…" : "");
+
+  container.append(document.createTextNode(prefix));
+  const mark = document.createElement("span");
+  mark.className = "search-hit";
+  mark.textContent = matched;
+  container.append(mark);
+  container.append(document.createTextNode(suffix));
+}
+
+function handleSearchResultClick(event) {
+  const item = event.target.closest(".search-result");
+  if (!item) return;
+  const ci = Number(item.dataset.chapterIndex);
+  const pi = Number(item.dataset.paragraphIndex);
+  if (!Number.isFinite(ci) || !Number.isFinite(pi)) return;
+  jumpToParagraph(ci, pi);
+}
+
+// 找到第一个 (chapterIndex, paragraphIndex) 匹配的 block 滚过去；
+// 双栏对照里 block.paragraphIndex 即是段索引，原文/双语模式下也带这两字段，可直接用
+function jumpToParagraph(chapterIndex, paragraphIndex) {
+  if (!virtualBook.blocks.length) return;
+  const blockIndex = virtualBook.blocks.findIndex(
+    (b) => b.chapterIndex === chapterIndex && b.paragraphIndex === paragraphIndex
+  );
+  if (blockIndex < 0) {
+    // 没匹配到（理论上不会发生），退化到按章跳转
+    scrollToChapter(chapterIndex);
+    return;
+  }
+  const offset = virtualBook.offsets[blockIndex] || 0;
+  state.currentChapterIndex = chapterIndex;
+  dom.reader.scrollTo({ top: Math.max(0, offset - 12), behavior: "smooth" });
+  updateButtons();
+  highlightTocActive();
 }
 
 // 渲染列表：按 createdAt 倒序 + 按 marksFilter 过滤
@@ -3326,6 +3525,7 @@ function clearBook() {
   // 注意 rt_progress / rt_notes 不主动清，重新导入同一本书还能找回。
   closeMarksPanel();
   closeTocPanel();
+  closeSearchPanel();
   closeMarkContextMenu();
   state = {
     ...defaultState,
