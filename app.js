@@ -906,38 +906,29 @@ function isParallelTranslationEnabled() {
   return state.translator.parallelMode || state.translator.view === "parallel";
 }
 
-// 双栏对照：每段一个 block，段内按句切成 pieces。
-// 保留原书的段落形态，避免每句独立成段后失去阅读节奏；
-// 仍允许逐句点击/选中触发对侧高亮（按 piece 的 cacheKey 对齐）。
+// 双栏对照：每段一个 block，整段做一次翻译请求。
+// 翻译粒度从"句"提到"段"：模型上下文更连贯、请求数也降一个量级。
+// 段 piece 数 = 1：cacheKey 用段原文 hash，渲染/排队/缓存逻辑天然按段对齐。
 function getChapterSentencePairs(chapter, chapterIndex) {
   const paragraphs = splitParagraphs(chapter.text);
-  let runningSentenceIndex = 0;
 
   return paragraphs
     .map((paragraphText, paragraphIndex) => {
-      const sentences = splitSentences(paragraphText)
-        .map((text) => text.trim())
-        .filter(Boolean);
-      if (!sentences.length) return null;
-
-      const pieces = sentences.map((text) => {
-        const piece = {
-          text,
-          sentenceIndex: runningSentenceIndex,
-          cacheKey: createSentenceCacheKey(text),
-        };
-        runningSentenceIndex += 1;
-        return piece;
-      });
-
+      const text = normalizeText(paragraphText).replace(/\s+/g, " ").trim();
+      if (!text) return null;
       return {
         type: "paragraph-pair",
         kind: "parallel",
         chapterIndex,
         paragraphIndex,
-        sentences: pieces,
-        // 估高用：拼接后的段落原文长度
-        text: sentences.join(" "),
+        sentences: [
+          {
+            text,
+            sentenceIndex: paragraphIndex,
+            cacheKey: createSentenceCacheKey(text),
+          },
+        ],
+        text,
       };
     })
     .filter(Boolean);
@@ -1420,7 +1411,7 @@ function legacyQueueSentenceTranslation(block) {
         textHash: hashText(block.text),
       });
       updateRenderedSentence(block.cacheKey, translation);
-      setTranslatorStatus("可见内容已按句翻译并缓存。", "success");
+      setTranslatorStatus("可见内容已按段翻译并缓存。", "success");
     })
     .catch((error) => {
       updateRenderedSentence(block.cacheKey, getTranslateErrorMessage(error), "error");
@@ -1903,7 +1894,7 @@ function translateVisibleSentences() {
       pieceCount += 1;
     });
   });
-  setTranslatorStatus(`已提交 ${pieceCount} 个可见句子进行翻译。`, "loading");
+  setTranslatorStatus(`已提交 ${pieceCount} 段可见内容进行翻译。`, "loading");
 }
 
 function translateParagraphs(paragraphs, title) {
@@ -2354,7 +2345,7 @@ function clearVisibleSentenceTranslations() {
       if (key) sentenceTranslationMemory.delete(key);
       updateSentencePiece(piece, "翻译中...", "loading");
     });
-  setTranslatorStatus("已清除当前可见句子的内存译文；IndexedDB 缓存会继续避免重复消耗。", "success");
+  setTranslatorStatus("已清除当前可见段的内存译文；IndexedDB 缓存会继续避免重复消耗。", "success");
 }
 
 function openTranslatorPanel() {
