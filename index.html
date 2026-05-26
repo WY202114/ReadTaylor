@@ -65,6 +65,8 @@
             <button id="immersive-toggle" class="tool-button" type="button">沉浸</button>
             <!-- 翻译按钮：左键开关；右键或长按打开设置面板 -->
             <button id="translate-toggle" class="tool-button" type="button" title="点击开启/关闭翻译；右键或长按打开翻译设置">翻译</button>
+            <!-- 目录：打开本书章节列表，点击章节跳转 -->
+            <button id="toc-button" class="tool-button" type="button" title="打开本书目录">目录</button>
             <!-- 我的书签：打开列表面板；加书签 / 加标记走正文右键菜单 -->
             <button id="marks-button" class="tool-button" type="button" title="打开标记列表；正文里右键可加书签/标记">我的书签</button>
             <!-- 折叠/展开底部设置栏 -->
@@ -171,6 +173,14 @@
             </div>
             <p id="translator-status" class="translator-status">双栏对照使用 OpenAI 兼容接口，Base URL 可预填，API Key 需自行填写；句级译文缓存到本地 IndexedDB。</p>
           </div>
+        </section>
+
+        <section id="toc-panel" class="marks-panel toc-panel" aria-label="目录" hidden>
+          <div class="marks-head">
+            <strong>目录</strong>
+            <button id="toc-close" class="ghost-button" type="button">关闭</button>
+          </div>
+          <div id="toc-list" class="toc-list" role="list"></div>
         </section>
 
         <section id="marks-panel" class="marks-panel" aria-label="标记列表" hidden>

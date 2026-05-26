@@ -696,6 +696,65 @@ button {
   padding-right: 2px;
 }
 
+/* 目录列表：紧凑一些，便于一屏看到更多章节 */
+.toc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 60px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.toc-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--reader-ink);
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.4;
+  cursor: pointer;
+  width: 100%;
+}
+
+.toc-item:hover {
+  background: var(--panel-soft);
+}
+
+.toc-item.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--reader-ink);
+  font-weight: 600;
+}
+
+.toc-item-index {
+  flex-shrink: 0;
+  min-width: 36px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.toc-item-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toc-empty {
+  margin: 18px 0;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+}
+
 .marks-empty {
   margin: 18px 0;
   color: var(--muted);

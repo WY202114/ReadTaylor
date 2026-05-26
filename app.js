@@ -55,6 +55,10 @@ const dom = {
   marksClose: document.querySelector("#marks-close"),
   marksList: document.querySelector("#marks-list"),
   marksFilter: document.querySelector("#marks-filter"),
+  tocButton: document.querySelector("#toc-button"),
+  tocPanel: document.querySelector("#toc-panel"),
+  tocClose: document.querySelector("#toc-close"),
+  tocList: document.querySelector("#toc-list"),
   settingsToggle: document.querySelector("#settings-toggle"),
   sidebarToggle: document.querySelector("#sidebar-toggle"),
   fontSize: document.querySelector("#font-size"),
@@ -154,6 +158,9 @@ function bindEvents() {
   dom.marksClose.addEventListener("click", closeMarksPanel);
   dom.marksFilter.addEventListener("click", handleMarksFilterClick);
   dom.marksList.addEventListener("click", handleMarksListClick);
+  dom.tocButton.addEventListener("click", toggleTocPanel);
+  dom.tocClose.addEventListener("click", closeTocPanel);
+  dom.tocList.addEventListener("click", handleTocListClick);
   // 正文里右键 → 弹出加标记菜单（书签 / 生词 / 好句 / 难句 / 语法）
   dom.reader.addEventListener("contextmenu", handleReaderContextMenu);
   dom.restoreBookmark.addEventListener("click", restoreBookmark);
@@ -588,6 +595,8 @@ function renderAll() {
   applyTranslatorSettings();
   updateButtons();
   updateProgress();
+  // 目录面板开着时换书要立即刷新章节列表，否则会停留在上一本书的目录
+  if (tocPanelOpen) renderTocList();
 }
 
 function renderBook() {
@@ -1367,6 +1376,7 @@ function scrollToChapter(index) {
     behavior: "smooth",
   });
   updateButtons();
+  highlightTocActive();
 }
 
 function updateCurrentChapterFromScroll() {
@@ -1386,6 +1396,7 @@ function updateCurrentChapterFromScroll() {
   if (current !== state.currentChapterIndex) {
     state.currentChapterIndex = current;
     updateButtons();
+    highlightTocActive();
   }
 }
 
@@ -1474,6 +1485,7 @@ function updateButtons() {
   const hasBook = state.chapters.length > 0;
   dom.immersiveToggle.classList.toggle("active", state.immersive);
   dom.marksButton.disabled = !hasBook;
+  dom.tocButton.disabled = !hasBook;
   dom.restoreBookmark.disabled = !hasBook || !state.bookmark;
   dom.translateChapter.disabled = !hasBook;
   dom.clearTranslation.disabled = !hasBook || !getCurrentTranslation();
@@ -1490,6 +1502,7 @@ async function setImmersiveMode(enabled) {
     state.translator.panelOpen = false;
     applyTranslatorSettings();
     closeMarksPanel();
+    closeTocPanel();
     closeMarkContextMenu();
     await enterBrowserFullscreen();
   } else {
@@ -1523,8 +1536,9 @@ async function exitBrowserFullscreen() {
 
 function toggleTranslatorPanel() {
   state.translator.panelOpen = !state.translator.panelOpen;
-  // 翻译面板和标记面板同位（右上浮层），同时只展示一个，避免叠在一起
+  // 翻译面板和标记/目录面板同位（右上浮层），同时只展示一个，避免叠在一起
   if (state.translator.panelOpen && marksPanelOpen) closeMarksPanel();
+  if (state.translator.panelOpen && tocPanelOpen) closeTocPanel();
   applyTranslatorSettings();
   saveState();
 }
@@ -2710,6 +2724,7 @@ const MARK_TAG_LABELS = {
 
 let marksPanelOpen = false;
 let marksFilter = "all";
+let tocPanelOpen = false;
 
 // 在指定 block 上追加一条 mark。type/tag 决定它是书签还是哪种标签的笔记。
 // overrideText 不为空时（一般是用户的选中文字）会用它作为 selectedText，
@@ -2908,6 +2923,7 @@ function toggleMarksPanel() {
 
 function openMarksPanel() {
   if (state.translator.panelOpen) closeTranslatorPanel();
+  if (tocPanelOpen) closeTocPanel();
   marksPanelOpen = true;
   dom.marksPanel.hidden = false;
   dom.marksButton.classList.add("active");
@@ -2918,6 +2934,87 @@ function closeMarksPanel() {
   marksPanelOpen = false;
   dom.marksPanel.hidden = true;
   dom.marksButton.classList.remove("active");
+}
+
+// 目录面板：和翻译/标记面板互斥，点章节跳转后保持打开方便继续浏览
+function toggleTocPanel() {
+  if (tocPanelOpen) {
+    closeTocPanel();
+  } else {
+    openTocPanel();
+  }
+}
+
+function openTocPanel() {
+  if (state.translator.panelOpen) closeTranslatorPanel();
+  if (marksPanelOpen) closeMarksPanel();
+  tocPanelOpen = true;
+  dom.tocPanel.hidden = false;
+  dom.tocButton.classList.add("active");
+  renderTocList();
+}
+
+function closeTocPanel() {
+  tocPanelOpen = false;
+  dom.tocPanel.hidden = true;
+  dom.tocButton.classList.remove("active");
+}
+
+function renderTocList() {
+  const list = dom.tocList;
+  list.replaceChildren();
+
+  if (!state.chapters.length) {
+    const empty = document.createElement("p");
+    empty.className = "toc-empty";
+    empty.textContent = "先导入一本书才能看到目录。";
+    list.append(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  state.chapters.forEach((chapter, index) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "toc-item";
+    item.dataset.index = String(index);
+    item.setAttribute("role", "listitem");
+    if (index === state.currentChapterIndex) item.classList.add("active");
+
+    const indexEl = document.createElement("span");
+    indexEl.className = "toc-item-index";
+    indexEl.textContent = `${index + 1}.`;
+
+    const titleEl = document.createElement("span");
+    titleEl.className = "toc-item-title";
+    titleEl.textContent = chapter.title || `第 ${index + 1} 节`;
+
+    item.append(indexEl, titleEl);
+    fragment.append(item);
+  });
+  list.append(fragment);
+
+  // 打开面板时把当前章节滚到视野内，避免长目录看不到自己在哪
+  const active = list.querySelector(".toc-item.active");
+  if (active) active.scrollIntoView({ block: "nearest" });
+}
+
+function handleTocListClick(event) {
+  const item = event.target.closest(".toc-item");
+  if (!item) return;
+  const index = Number(item.dataset.index);
+  if (!Number.isFinite(index)) return;
+  scrollToChapter(index);
+}
+
+// 滚动时轻量更新当前章节高亮，不重绘整个列表，避免长目录闪烁
+function highlightTocActive() {
+  if (!tocPanelOpen) return;
+  const items = dom.tocList.querySelectorAll(".toc-item");
+  items.forEach((item) => {
+    const isActive = Number(item.dataset.index) === state.currentChapterIndex;
+    item.classList.toggle("active", isActive);
+  });
 }
 
 // 渲染列表：按 createdAt 倒序 + 按 marksFilter 过滤
@@ -3122,9 +3219,10 @@ function handleImmersivePointer(event) {
 }
 
 function clearBook() {
-  // 清空当前书时关掉标记面板和右键菜单（没书也就没标记可加可看）；
+  // 清空当前书时关掉标记/目录面板和右键菜单（没书也就没标记/目录可看）；
   // 注意 rt_progress / rt_notes 不主动清，重新导入同一本书还能找回。
   closeMarksPanel();
+  closeTocPanel();
   closeMarkContextMenu();
   state = {
     ...defaultState,
