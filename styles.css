@@ -403,24 +403,12 @@ button {
   font-size: 11px;
 }
 
-/* 朗读段级高亮：左侧色条 + 较明显背景，首次定位一眼就能看到 */
+/* 朗读段级高亮：左侧色条 + 较明显背景 */
 .tts-block-active {
   position: relative;
   background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
   border-radius: 6px;
   box-shadow: inset 4px 0 0 var(--accent);
-  animation: tts-block-pulse 0.7s ease-out;
-}
-
-@keyframes tts-block-pulse {
-  0% {
-    background: color-mix(in srgb, var(--accent) 35%, transparent);
-    box-shadow: inset 4px 0 0 var(--accent), 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
-  }
-  100% {
-    background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
-    box-shadow: inset 4px 0 0 var(--accent);
-  }
 }
 
 /* 句级高亮采用 karaoke 风格：已读过的句子淡化为灰，
