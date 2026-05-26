@@ -133,7 +133,10 @@ let translationDbPromise = null;
 const sentenceTranslationMemory = new Map();
 const queuedSentenceTranslations = new Map();
 const sentenceTranslationQueue = [];
-let isSentenceTranslationQueueRunning = false;
+// 翻译队列并发 worker 计数：3 个 worker 共享同一队列，
+// 6 个短段同时跑约等于 1 段的时间，避免短段被前面长段卡住
+const TRANSLATION_CONCURRENCY = 3;
+let activeTranslationWorkers = 0;
 const TRANSLATION_REQUEST_DELAY_MIN = 1000;
 const TRANSLATION_REQUEST_DELAY_MAX = 2000;
 const RATE_LIMIT_RETRY_LIMIT = 3;
@@ -1396,12 +1399,36 @@ async function hydrateSentencePiece(piece) {
     return;
   }
 
+  // 不需要翻译的"段"（纯数字编号、ISBN、URL、纯标点符号）：直接显示原文，
+  // 省一次 API 调用；这种段塞进队列只会拖慢真正需要翻译的文本
+  if (isUntranslatable(piece.text)) {
+    sentenceTranslationMemory.set(piece.cacheKey, piece.text);
+    updateRenderedSentence(piece.cacheKey, piece.text, "ready");
+    return;
+  }
+
   if (!canUseParallelTranslator()) {
     updateRenderedSentence(piece.cacheKey, "请在翻译设置中填写 API Key 和模型名。", "missing");
     return;
   }
 
   queueSentenceTranslation(piece);
+}
+
+// 判断这段文本是不是"不值得翻译"——译出来还是原文样
+function isUntranslatable(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return true;
+  // 纯数字 + 常见分隔符（年份 032014、电话号、版本号）
+  if (/^[\d\s\-:.,/()]+$/.test(trimmed)) return true;
+  // ISBN: 978-1-61268-018-7 形态
+  if (/^ISBN[:：\s]/i.test(trimmed)) return true;
+  // 单独一个 URL 或裸域名
+  if (/^https?:\/\/\S+$/i.test(trimmed)) return true;
+  if (/^[\w-]+\.(?:com|org|net|io|cn|co|app|dev|gov|edu)(?:\/\S*)?$/i.test(trimmed)) return true;
+  // 完全没有字母也没有 CJK，纯符号/数字
+  if (!/[a-zA-Z一-鿿]/.test(trimmed)) return true;
+  return false;
 }
 
 // 译文按 piece 替换：在已渲染 DOM 里找 cacheKey 对应的"译文侧"span，
@@ -1429,42 +1456,49 @@ function queueSentenceTranslation(block) {
   runSentenceTranslationQueue();
 }
 
-async function runSentenceTranslationQueue() {
-  if (isSentenceTranslationQueueRunning) return;
-  isSentenceTranslationQueueRunning = true;
-
-  while (sentenceTranslationQueue.length) {
-    const item = sentenceTranslationQueue.shift();
-    if (!item || queuedSentenceTranslations.get(item.cacheKey) !== item) continue;
-
-    updateRenderedSentence(item.cacheKey, "翻译中...", "loading");
-    setTranslatorStatus(`翻译排队中：正在处理 1 条，剩余 ${sentenceTranslationQueue.length} 条。`, "loading");
-
-    try {
-      const translation = await translateSentenceWithModel(item.text);
-      await setCachedSentenceTranslation(item.cacheKey, translation, {
-        source: detectLanguage(item.text),
-        target: state.translator.target,
-        model: state.translator.model,
-        endpoint: normalizeBaseUrl(state.translator.endpoint),
-        textHash: hashText(item.text),
-      });
-      updateRenderedSentence(item.cacheKey, translation);
-    } catch (error) {
-      updateRenderedSentence(item.cacheKey, getTranslateErrorMessage(error), "error");
-      setTranslatorStatus(getTranslateErrorMessage(error), "error");
-    } finally {
-      queuedSentenceTranslations.delete(item.cacheKey);
-    }
-
-    if (sentenceTranslationQueue.length) {
-      await waitForNextTranslationRequest();
-    }
+function runSentenceTranslationQueue() {
+  // 启动到上限的 worker；已经在跑的不重复启动
+  while (activeTranslationWorkers < TRANSLATION_CONCURRENCY && sentenceTranslationQueue.length) {
+    spawnSentenceTranslationWorker();
   }
+}
 
-  isSentenceTranslationQueueRunning = false;
-  if (queuedSentenceTranslations.size === 0) {
-    setTranslatorStatus("可见内容已按队列翻译并缓存。", "success");
+async function spawnSentenceTranslationWorker() {
+  activeTranslationWorkers += 1;
+  try {
+    while (sentenceTranslationQueue.length) {
+      const item = sentenceTranslationQueue.shift();
+      if (!item || queuedSentenceTranslations.get(item.cacheKey) !== item) continue;
+
+      updateRenderedSentence(item.cacheKey, "翻译中...", "loading");
+      setTranslatorStatus(
+        `翻译进行中：${activeTranslationWorkers} 个并发，队列剩余 ${sentenceTranslationQueue.length} 条。`,
+        "loading"
+      );
+
+      try {
+        const translation = await translateSentenceWithModel(item.text);
+        await setCachedSentenceTranslation(item.cacheKey, translation, {
+          source: detectLanguage(item.text),
+          target: state.translator.target,
+          model: state.translator.model,
+          endpoint: normalizeBaseUrl(state.translator.endpoint),
+          textHash: hashText(item.text),
+        });
+        updateRenderedSentence(item.cacheKey, translation);
+      } catch (error) {
+        updateRenderedSentence(item.cacheKey, getTranslateErrorMessage(error), "error");
+        setTranslatorStatus(getTranslateErrorMessage(error), "error");
+      } finally {
+        queuedSentenceTranslations.delete(item.cacheKey);
+      }
+      // worker 之间不互相 sleep；如果命中 429，fetchWithRateLimitRetry 会自动退避重试
+    }
+  } finally {
+    activeTranslationWorkers -= 1;
+    if (activeTranslationWorkers === 0 && queuedSentenceTranslations.size === 0) {
+      setTranslatorStatus("可见内容已按队列翻译并缓存。", "success");
+    }
   }
 }
 
