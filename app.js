@@ -1235,6 +1235,19 @@ function renderVirtualWindow() {
   measureRenderedBlocks(startIndex, windowNode);
   hydrateVisibleSentenceTranslations(windowNode);
   content.style.height = `${Math.max(virtualBook.totalHeight, dom.reader.clientHeight)}px`;
+  restoreTtsStateIfVisible();
+}
+
+function restoreTtsStateIfVisible() {
+  if (!ttsState.active || ttsState.blockIndex < 0) return;
+  const [startIndex, endIndex] = virtualBook.renderedRange;
+  if (ttsState.blockIndex >= startIndex && ttsState.blockIndex <= endIndex) {
+    const block = virtualBook.blocks[ttsState.blockIndex];
+    if (block) {
+      highlightTtsBlock(ttsState.blockIndex);
+      prepareTtsSentenceOverlay(ttsState.blockIndex, block);
+    }
+  }
 }
 
 function createVirtualBlock(block, index) {
@@ -3377,6 +3390,7 @@ const ttsState = {
   active: false,
   paused: false,
   blockIndex: -1,
+  sentenceIndex: 0, // 跟踪当前段落中正在朗读的句子索引
   utterance: null,
   // 当前段在 DOM 中被改写成 sentence span overlay 后的引用，便于句级高亮和恢复
   overlay: null,
@@ -3406,6 +3420,7 @@ function startTts(blockIndex) {
   ttsState.active = true;
   ttsState.paused = false;
   ttsState.blockIndex = blockIndex;
+  ttsState.sentenceIndex = 0;
   applyTtsRateUI();
   ensureTtsVoicesLoaded();
   showTtsBar();
@@ -3425,6 +3440,7 @@ function stopTts() {
   ttsState.active = false;
   ttsState.paused = false;
   ttsState.blockIndex = -1;
+  ttsState.sentenceIndex = 0;
   ttsState.utterance = null;
   hideTtsBar();
   dom.ttsButton.classList.remove("active");
@@ -3473,6 +3489,7 @@ function speakCurrentTtsBlock() {
   state.currentChapterIndex = block.chapterIndex;
   scrollBlockIntoTtsView(ttsState.blockIndex);
   highlightTtsBlock(ttsState.blockIndex);
+  ttsState.sentenceIndex = 0;
   // 段切换时拆当前段 DOM 成 sentence span overlay，准备句级高亮
   prepareTtsSentenceOverlay(ttsState.blockIndex, block);
 
@@ -3569,7 +3586,12 @@ function prepareTtsSentenceOverlay(blockIndex, block) {
     }
     const span = document.createElement("span");
     span.className = "tts-sentence";
-    if (i === 0) span.classList.add("is-active");
+    const currentIdx = ttsState.sentenceIndex ?? 0;
+    if (i === currentIdx) {
+      span.classList.add("is-active");
+    } else if (i < currentIdx) {
+      span.classList.add("is-spoken");
+    }
     span.dataset.ttsIndex = String(i);
     span.textContent = s.text;
     target.append(span);
@@ -3599,6 +3621,7 @@ function setupTtsBoundary(utterance, text) {
     if (typeof charIndex !== "number") return;
     const idx = overlay.sentences.findIndex((s) => charIndex >= s.start && charIndex < s.end);
     if (idx < 0) return;
+    ttsState.sentenceIndex = idx;
     overlay.sentences.forEach((s, i) => {
       s.el.classList.toggle("is-active", i === idx);
       s.el.classList.toggle("is-spoken", i < idx);
