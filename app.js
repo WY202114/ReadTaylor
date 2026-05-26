@@ -1008,7 +1008,17 @@ function splitSentences(text) {
 
     // 英文 . ! ?：需要严格判断，避免缩写/网址/小数点等场景的误断
     if (/[.!?]/.test(char)) {
-      const next = normalized[i + 1];
+      let nextIdx = i + 1;
+      let next = normalized[nextIdx];
+
+      // 如果紧跟引号，我们把引号也吞进当前句的 buffer 里，并移动循环索引以跳过它
+      if (next && /["'”’]/.test(next)) {
+        buffer += next;
+        i += 1;
+        nextIdx += 1;
+        next = normalized[nextIdx];
+      }
+
       // 后面紧跟非空字符（如 acm.org、3.14）说明是词内 . 不是句末
       if (next && !/\s/.test(next)) continue;
 
@@ -1518,6 +1528,10 @@ function scrollToChapter(index) {
   const target = clamp(index, 0, state.chapters.length - 1);
   const offset = virtualBook.chapterOffsets[target] || 0;
   state.currentChapterIndex = target;
+  
+  // 手动切换章节时，清除上次的朗读续读缓存
+  ttsState.lastBlockIndex = -1;
+  
   dom.reader.scrollTo({
     top: offset,
     behavior: "smooth",
@@ -3379,6 +3393,10 @@ function jumpToParagraph(chapterIndex, paragraphIndex) {
   }
   const offset = virtualBook.offsets[blockIndex] || 0;
   state.currentChapterIndex = chapterIndex;
+  
+  // 手动跳转段落时，清除上次的朗读续读缓存
+  ttsState.lastBlockIndex = -1;
+  
   dom.reader.scrollTo({ top: Math.max(0, offset - 12), behavior: "smooth" });
   updateButtons();
   highlightTocActive();
@@ -3394,6 +3412,7 @@ const ttsState = {
   utterance: null,
   // 当前段在 DOM 中被改写成 sentence span overlay 后的引用，便于句级高亮和恢复
   overlay: null,
+  lastBlockIndex: -1, // 保存上次朗读的位置，以支持精准续读
 };
 let ttsVoices = [];
 let ttsResumeTimer = 0;
@@ -3408,9 +3427,23 @@ function toggleTts() {
     stopTts();
     return;
   }
-  // 从当前可见的第一个 block 开始读
-  const { blockIndex } = getCurrentBlockInfo();
-  startTts(Math.max(0, blockIndex));
+  
+  let targetBlockIndex = -1;
+  const [startIndex, endIndex] = virtualBook.renderedRange;
+  // 如果有上次播放段落，且该段落仍然在当前可见范围内（说明用户没有大范围翻页滚动），则直接续读
+  if (
+    ttsState.lastBlockIndex !== -1 &&
+    ttsState.lastBlockIndex >= startIndex &&
+    ttsState.lastBlockIndex <= endIndex
+  ) {
+    targetBlockIndex = ttsState.lastBlockIndex;
+  } else {
+    // 否则从当前可见的首段开始读
+    const { blockIndex } = getCurrentBlockInfo();
+    targetBlockIndex = Math.max(0, blockIndex);
+  }
+  
+  startTts(targetBlockIndex);
 }
 
 function startTts(blockIndex) {
@@ -3435,6 +3468,10 @@ function stopTts() {
     ttsResumeTimer = 0;
   }
   try { speechSynthesis.cancel(); } catch {}
+  
+  // 停止前保存最后播放的段落位置，用以支持精准续读
+  ttsState.lastBlockIndex = ttsState.blockIndex;
+  
   removeTtsOverlay();
   clearTtsBlockHighlight();
   ttsState.active = false;
@@ -3478,7 +3515,7 @@ function speakCurrentTtsBlock() {
     stopTts();
     return;
   }
-  const text = (block.text || "").trim();
+  const text = normalizeText(block.text || "").replace(/\n+/g, " ").replace(/[ \t]+/g, " ").trim();
   if (!text) {
     ttsState.blockIndex += 1;
     speakCurrentTtsBlock();
@@ -3953,6 +3990,7 @@ function clearBook() {
   closeTocPanel();
   closeSearchPanel();
   stopTts();
+  ttsState.lastBlockIndex = -1; // 清除续读缓存
   closeMarkContextMenu();
   state = {
     ...defaultState,
