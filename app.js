@@ -3413,6 +3413,13 @@ const ttsState = {
   // 当前段在 DOM 中被改写成 sentence span overlay 后的引用，便于句级高亮和恢复
   overlay: null,
   lastBlockIndex: -1, // 保存上次朗读的位置，以支持精准续读
+  
+  // 备用计时器相关状态（针对不支持 onboundary 的浏览器环境）
+  timerId: 0,
+  startTime: 0,
+  elapsedOffset: 0,
+  sentenceEndTimes: [],
+  hasNativeBoundary: false,
 };
 let ttsVoices = [];
 let ttsResumeTimer = 0;
@@ -3472,6 +3479,7 @@ function stopTts() {
   // 停止前保存最后播放的段落位置，用以支持精准续读
   ttsState.lastBlockIndex = ttsState.blockIndex;
   
+  clearTtsTimer();
   removeTtsOverlay();
   clearTtsBlockHighlight();
   ttsState.active = false;
@@ -3483,6 +3491,65 @@ function stopTts() {
   dom.ttsButton.classList.remove("active");
 }
 
+function getSentenceBaseDuration(text) {
+  const cjkCount = (text.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+  const totalLen = text.length || 1;
+  const isCjk = (cjkCount / totalLen) > 0.3;
+  // 预设中英文在 1.0x 速率下的每秒朗读字符数
+  // 中文：每秒约 5.5 个字；英文：每秒约 14.5 个字符（含空格）
+  const charSpeed = isCjk ? 5.5 : 14.5;
+  
+  // 基础朗读时间（毫秒），并为短句加上一点停顿缓冲时间（400ms）
+  return (totalLen / charSpeed) * 1000 + 400;
+}
+
+function startTtsTimer() {
+  clearTtsTimer();
+  if (!ttsState.active || ttsState.paused) return;
+  ttsState.timerId = window.setInterval(updateTtsTimerProgress, 100);
+}
+
+function pauseTtsTimer() {
+  if (ttsState.timerId) {
+    window.clearInterval(ttsState.timerId);
+    ttsState.timerId = 0;
+  }
+}
+
+function clearTtsTimer() {
+  pauseTtsTimer();
+  ttsState.elapsedOffset = 0;
+  ttsState.sentenceEndTimes = [];
+}
+
+function updateTtsTimerProgress() {
+  // 如果浏览器原生 onboundary 已经触发过并证实可用，则立即禁用备用计时器以节省资源并避免冲突
+  if (ttsState.hasNativeBoundary) {
+    clearTtsTimer();
+    return;
+  }
+  
+  const overlay = ttsState.overlay;
+  if (!overlay || !ttsState.sentenceEndTimes.length) return;
+  
+  const elapsed = (performance.now() - ttsState.startTime) + ttsState.elapsedOffset;
+  const rate = clamp(Number(state.settings.ttsRate) || 1, 0.5, 2.5);
+  const elapsedAdjusted = elapsed * rate;
+  
+  let idx = ttsState.sentenceEndTimes.findIndex((endTime) => elapsedAdjusted < endTime);
+  if (idx < 0) {
+    idx = ttsState.sentenceEndTimes.length - 1;
+  }
+  
+  if (idx !== ttsState.sentenceIndex) {
+    ttsState.sentenceIndex = idx;
+    overlay.sentences.forEach((s, i) => {
+      s.el.classList.toggle("is-active", i === idx);
+      s.el.classList.toggle("is-spoken", i < idx);
+    });
+  }
+}
+
 function togglePauseTts() {
   if (!ttsState.active) return;
   if (ttsState.paused) {
@@ -3490,11 +3557,19 @@ function togglePauseTts() {
     ttsState.paused = false;
     dom.ttsPlay.textContent = "⏸";
     dom.ttsPlay.title = "暂停";
+    
+    // 恢复计时
+    ttsState.startTime = performance.now();
+    startTtsTimer();
   } else {
     speechSynthesis.pause();
     ttsState.paused = true;
     dom.ttsPlay.textContent = "▶";
     dom.ttsPlay.title = "继续";
+    
+    // 暂停并记录已度过时间偏移量
+    ttsState.elapsedOffset += performance.now() - ttsState.startTime;
+    pauseTtsTimer();
   }
 }
 
@@ -3529,6 +3604,12 @@ function speakCurrentTtsBlock() {
   ttsState.sentenceIndex = 0;
   // 段切换时拆当前段 DOM 成 sentence span overlay，准备句级高亮
   prepareTtsSentenceOverlay(ttsState.blockIndex, block);
+
+  // 初始化备用计时器状态并开启
+  ttsState.startTime = performance.now();
+  ttsState.elapsedOffset = 0;
+  ttsState.hasNativeBoundary = false;
+  startTtsTimer();
 
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.rate = clamp(Number(state.settings.ttsRate) || 1, 0.5, 2.5);
@@ -3613,6 +3694,13 @@ function prepareTtsSentenceOverlay(blockIndex, block) {
   const normalizedText = normalizeText(block.text || "").replace(/\n+/g, " ").replace(/[ \t]+/g, " ").trim();
   const sentencesWithRange = splitSentencesWithRanges(normalizedText);
   if (!sentencesWithRange.length) return;
+
+  // 预先计算各句在 1.0x 速率下的累积播放时间截止点，用于备用计时器
+  let accum = 0;
+  ttsState.sentenceEndTimes = sentencesWithRange.map((s) => {
+    accum += getSentenceBaseDuration(s.text);
+    return accum;
+  });
 
   const originalNodes = [...target.childNodes].map((n) => n.cloneNode(true));
   target.replaceChildren();
