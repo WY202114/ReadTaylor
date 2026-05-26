@@ -2618,6 +2618,10 @@ function findSentencePieceFromNode(node) {
 const LOOKUP_WORD_REGEX = /^[a-zA-Z][a-zA-Z\s\-']*$/;
 let currentLookupPopup = null;
 let lookupOutsideClickHandler = null;
+// 同一会话里同一个词的"翻译 + 词典释义"做内存缓存：
+// 第二次选同一个词直接毫秒级出结果，不再走海外 API
+// value: { translation?: string, entry?: object|null }（entry=null 表示词典查过但无释义）
+const lookupCache = new Map();
 
 function handleLookupSelection() {
   const selection = window.getSelection?.();
@@ -2659,12 +2663,10 @@ function openLookupPopup(word, anchorRect) {
 
   const body = document.createElement("div");
   body.className = "lookup-body";
-  body.textContent = "查询中...";
 
   popup.append(title, body);
   // 挂到 .app-shell 内部以继承当前主题变量（夜间/清爽等）
   dom.shell.append(popup);
-  positionLookupPopup(popup, anchorRect);
 
   currentLookupPopup = popup;
   lookupOutsideClickHandler = (event) => {
@@ -2673,41 +2675,57 @@ function openLookupPopup(word, anchorRect) {
   };
   document.addEventListener("mousedown", lookupOutsideClickHandler);
 
-  // 真正发请求填内容。用 popup 引用做"还是不是当前弹窗"的判断，
-  // 防止用户连续选词时旧请求的结果覆盖新弹窗。
-  fetchLookupResult(word)
-    .then((result) => {
-      if (currentLookupPopup !== popup) return;
-      renderLookupBody(body, result);
-      // 内容变化后重新定位，避免被挤出视口
+  const cacheKey = word.trim().toLowerCase();
+  const cached = lookupCache.get(cacheKey) || {};
+  // partial 同时承担"已知结果"和"渐进式累积"两个角色：
+  // - 翻译 / 词典哪一路先回来就刷新一次 body，不再等慢的那路
+  // - 任一路写回时同步刷 cache，下次同词命中无需再请求
+  const partial = { translation: cached.translation || "", entry: cached.entry };
+
+  const hasAnythingCached = Boolean(partial.translation) || partial.entry !== undefined;
+  if (hasAnythingCached) {
+    renderLookupBody(body, partial);
+  } else {
+    body.textContent = "查询中...";
+  }
+  positionLookupPopup(popup, anchorRect);
+
+  let pending = 0;
+  const trackFailure = () => {
+    pending -= 1;
+    if (pending === 0 && !partial.translation && !partial.entry) {
+      body.textContent = "未找到这个词的释义。";
       positionLookupPopup(popup, anchorRect);
-    })
-    .catch((error) => {
-      if (currentLookupPopup !== popup) return;
-      body.textContent = error?.message || "查询失败";
-      positionLookupPopup(popup, anchorRect);
-    });
-}
+    }
+  };
+  const handleArrival = () => {
+    lookupCache.set(cacheKey, { ...partial });
+    if (currentLookupPopup !== popup) return;
+    renderLookupBody(body, partial);
+    positionLookupPopup(popup, anchorRect);
+  };
 
-// 同时调中→英翻译和英文词典释义，谁返回就用谁，两个都失败才算失败
-async function fetchLookupResult(word) {
-  const [translationResult, dictResult] = await Promise.allSettled([
-    translateWithMyMemory(word, word),
-    fetchDictionaryEntry(word),
-  ]);
-
-  const translation = translationResult.status === "fulfilled" ? translationResult.value : "";
-  const entry = dictResult.status === "fulfilled" ? dictResult.value : null;
-
-  if (!translation && !entry) {
-    const reason =
-      translationResult.status === "rejected"
-        ? translationResult.reason?.message
-        : dictResult.reason?.message;
-    throw new Error(reason || "未找到这个词的释义。");
+  if (!partial.translation) {
+    pending += 1;
+    translateWithMyMemory(word, word)
+      .then((translation) => {
+        partial.translation = translation;
+        handleArrival();
+      })
+      .catch(() => {})
+      .finally(trackFailure);
   }
 
-  return { translation, entry };
+  if (partial.entry === undefined) {
+    pending += 1;
+    fetchDictionaryEntry(word)
+      .then((entry) => {
+        partial.entry = entry;
+        handleArrival();
+      })
+      .catch(() => {})
+      .finally(trackFailure);
+  }
 }
 
 // dictionaryapi.dev：免费、免 key、支持 CORS。单词找不到时返回 404，这里把 404 当作"没释义"处理
