@@ -435,17 +435,10 @@ button {
   color: color-mix(in srgb, var(--reader-ink) 35%, transparent);
 }
 
-/* 当前句：荧光笔下划线效果（background-image 模拟），不是 box，
-   切换时不会有边框出现/消失的闪烁。强色 + 加粗确保视觉明显 */
+/* 当前句：仅颜色加重 + 加粗，无下划线无背景，最克制的样式 */
 .tts-sentence.is-active {
   color: var(--accent-strong);
-  font-weight: 600;
-  background-image: linear-gradient(
-    transparent 55%,
-    color-mix(in srgb, var(--accent) 55%, transparent) 0,
-    color-mix(in srgb, var(--accent) 55%, transparent) 92%,
-    transparent 0
-  );
+  font-weight: 700;
 }
 
 .reader-toolbar {
