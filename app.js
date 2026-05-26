@@ -2280,8 +2280,12 @@ async function parseJsonResponse(response) {
   }
 
   if (!response.ok) {
+    // 完整响应打到 console，方便排查像 "Param Incorrect" 这种笼统报错
+    // F12 → Console 能看到接口到底嫌弃哪个字段
+    console.error("[translate] API error", response.status, response.url, data);
     const message =
       data?.error?.message ||
+      data?.error?.code ||
       data?.error ||
       data?.message ||
       `${response.status} ${response.statusText}`;
