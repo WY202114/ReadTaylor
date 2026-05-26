@@ -65,6 +65,8 @@
             <button id="immersive-toggle" class="tool-button" type="button">沉浸</button>
             <!-- 翻译按钮：左键开关；右键或长按打开设置面板 -->
             <button id="translate-toggle" class="tool-button" type="button" title="点击开启/关闭翻译；右键或长按打开翻译设置">翻译</button>
+            <!-- 朗读：从当前段落起按句朗读，浏览器原生 TTS -->
+            <button id="tts-button" class="tool-button" type="button" title="开始 / 停止朗读">朗读</button>
             <!-- 全文搜索：在整本书中搜词/句，点结果跳到对应段落 -->
             <button id="search-button" class="tool-button" type="button" title="在本书中搜索">搜索</button>
             <!-- 目录：打开本书章节列表，点击章节跳转 -->
@@ -212,6 +214,22 @@
           </div>
           <div id="marks-list" class="marks-list"></div>
         </section>
+
+        <div id="tts-bar" class="tts-bar" role="toolbar" aria-label="朗读控制" hidden>
+          <button id="tts-prev" class="tts-bar-button" type="button" title="上一段" aria-label="上一段">⏮</button>
+          <button id="tts-play" class="tts-bar-button tts-bar-play" type="button" title="暂停 / 继续" aria-label="暂停或继续">⏸</button>
+          <button id="tts-next" class="tts-bar-button" type="button" title="下一段" aria-label="下一段">⏭</button>
+          <label class="tts-bar-field">
+            <span>语速</span>
+            <input id="tts-rate" type="range" min="0.6" max="1.8" step="0.1" value="1" />
+            <span id="tts-rate-value" class="tts-bar-value">1.0×</span>
+          </label>
+          <label class="tts-bar-field">
+            <span>音色</span>
+            <select id="tts-voice" aria-label="选择音色"></select>
+          </label>
+          <button id="tts-stop" class="tts-bar-button tts-bar-stop" type="button" title="停止" aria-label="停止朗读">✕</button>
+        </div>
 
         <footer id="reading-controls" class="reading-controls" aria-label="阅读设置">
           <div class="control-group">

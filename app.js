@@ -65,6 +65,15 @@ const dom = {
   searchInput: document.querySelector("#search-input"),
   searchSummary: document.querySelector("#search-summary"),
   searchResults: document.querySelector("#search-results"),
+  ttsButton: document.querySelector("#tts-button"),
+  ttsBar: document.querySelector("#tts-bar"),
+  ttsPrev: document.querySelector("#tts-prev"),
+  ttsPlay: document.querySelector("#tts-play"),
+  ttsNext: document.querySelector("#tts-next"),
+  ttsStop: document.querySelector("#tts-stop"),
+  ttsRate: document.querySelector("#tts-rate"),
+  ttsRateValue: document.querySelector("#tts-rate-value"),
+  ttsVoice: document.querySelector("#tts-voice"),
   settingsToggle: document.querySelector("#settings-toggle"),
   sidebarToggle: document.querySelector("#sidebar-toggle"),
   fontSize: document.querySelector("#font-size"),
@@ -109,6 +118,9 @@ const defaultState = {
     parallelRatio: 0.5,
     // 左侧书库栏是否展开：无书时强制展开；有书时默认收起，给正文让位
     sidebarOpen: true,
+    // TTS：语速 + 上次选的 voiceURI（持久化，下次打开仍是这个嗓音）
+    ttsRate: 1.0,
+    ttsVoiceURI: "",
   },
 };
 
@@ -141,6 +153,14 @@ function init() {
   applySettings();
   renderAll();
   bindEvents();
+  // TTS：把语速滑块还原到上次的值；voice 列表晚一点会通过 voiceschanged 自动填
+  if (ttsSupported()) {
+    applyTtsRateUI();
+    ensureTtsVoicesLoaded();
+  } else if (dom.ttsButton) {
+    dom.ttsButton.disabled = true;
+    dom.ttsButton.title = "浏览器不支持朗读";
+  }
   // 重开 tab 时按 bookId 恢复进度（优先 blockIndex，scrollTop 兜底）。
   // 主 state 里也保留了 scrollTop，但 rt_progress 是跨"清空主 state / 再导入"的稳定源。
   if (state.book?.id && state.chapters.length) {
@@ -171,6 +191,16 @@ function bindEvents() {
   dom.searchClose.addEventListener("click", closeSearchPanel);
   dom.searchInput.addEventListener("input", handleSearchInput);
   dom.searchResults.addEventListener("click", handleSearchResultClick);
+  dom.ttsButton.addEventListener("click", toggleTts);
+  dom.ttsPlay.addEventListener("click", togglePauseTts);
+  dom.ttsStop.addEventListener("click", stopTts);
+  dom.ttsPrev.addEventListener("click", () => jumpTtsBlock(-1));
+  dom.ttsNext.addEventListener("click", () => jumpTtsBlock(1));
+  dom.ttsRate.addEventListener("input", handleTtsRateChange);
+  dom.ttsVoice.addEventListener("change", handleTtsVoiceChange);
+  if (typeof speechSynthesis !== "undefined") {
+    speechSynthesis.addEventListener("voiceschanged", refreshTtsVoiceList);
+  }
   // 正文里右键 → 弹出加标记菜单（书签 / 生词 / 好句 / 难句 / 语法）
   dom.reader.addEventListener("contextmenu", handleReaderContextMenu);
   dom.restoreBookmark.addEventListener("click", restoreBookmark);
@@ -216,6 +246,12 @@ function bindEvents() {
   window.addEventListener("keydown", handleShortcuts);
   window.addEventListener("resize", rebuildVirtualLayout);
   window.addEventListener("beforeunload", persistCurrentScroll);
+  // 关页面前必须 cancel，否则有些浏览器朗读会在后台继续
+  window.addEventListener("beforeunload", () => {
+    if (ttsSupported()) {
+      try { speechSynthesis.cancel(); } catch {}
+    }
+  });
 }
 
 async function handleFileImport(event) {
@@ -1585,6 +1621,7 @@ function updateButtons() {
   dom.marksButton.disabled = !hasBook;
   dom.tocButton.disabled = !hasBook;
   dom.searchButton.disabled = !hasBook;
+  dom.ttsButton.disabled = !hasBook || !ttsSupported();
   dom.restoreBookmark.disabled = !hasBook || !state.bookmark;
   dom.translateChapter.disabled = !hasBook;
   dom.clearTranslation.disabled = !hasBook || !getCurrentTranslation();
@@ -1603,6 +1640,7 @@ async function setImmersiveMode(enabled) {
     closeMarksPanel();
     closeTocPanel();
     closeSearchPanel();
+    stopTts();
     closeMarkContextMenu();
     await enterBrowserFullscreen();
   } else {
@@ -2674,7 +2712,21 @@ function openLookupPopup(word, anchorRect) {
 
   const title = document.createElement("div");
   title.className = "lookup-word";
-  title.textContent = word;
+  const wordSpan = document.createElement("span");
+  wordSpan.textContent = word;
+  title.append(wordSpan);
+  if (ttsSupported()) {
+    const speakBtn = document.createElement("button");
+    speakBtn.type = "button";
+    speakBtn.className = "lookup-speak";
+    speakBtn.title = "朗读这个词";
+    speakBtn.textContent = "🔊";
+    speakBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      speakLookupWord(word);
+    });
+    title.append(speakBtn);
+  }
 
   const body = document.createElement("div");
   body.className = "lookup-body";
@@ -3319,6 +3371,353 @@ function jumpToParagraph(chapterIndex, paragraphIndex) {
   highlightTocActive();
 }
 
+// ============ TTS 朗读：浏览器原生 SpeechSynthesis ============
+
+const ttsState = {
+  active: false,
+  paused: false,
+  blockIndex: -1,
+  utterance: null,
+  // 当前段在 DOM 中被改写成 sentence span overlay 后的引用，便于句级高亮和恢复
+  overlay: null,
+};
+let ttsVoices = [];
+let ttsResumeTimer = 0;
+
+function ttsSupported() {
+  return typeof speechSynthesis !== "undefined" && typeof SpeechSynthesisUtterance !== "undefined";
+}
+
+function toggleTts() {
+  if (!ttsSupported() || !state.chapters.length) return;
+  if (ttsState.active) {
+    stopTts();
+    return;
+  }
+  // 从当前可见的第一个 block 开始读
+  const { blockIndex } = getCurrentBlockInfo();
+  startTts(Math.max(0, blockIndex));
+}
+
+function startTts(blockIndex) {
+  if (!ttsSupported()) return;
+  // iOS Safari 需要在用户手势内首次调一次 speak 才能后续异步触发
+  try { speechSynthesis.cancel(); } catch {}
+  ttsState.active = true;
+  ttsState.paused = false;
+  ttsState.blockIndex = blockIndex;
+  applyTtsRateUI();
+  ensureTtsVoicesLoaded();
+  showTtsBar();
+  dom.ttsButton.classList.add("active");
+  speakCurrentTtsBlock();
+}
+
+function stopTts() {
+  if (!ttsSupported()) return;
+  if (ttsResumeTimer) {
+    clearInterval(ttsResumeTimer);
+    ttsResumeTimer = 0;
+  }
+  try { speechSynthesis.cancel(); } catch {}
+  removeTtsOverlay();
+  clearTtsBlockHighlight();
+  ttsState.active = false;
+  ttsState.paused = false;
+  ttsState.blockIndex = -1;
+  ttsState.utterance = null;
+  hideTtsBar();
+  dom.ttsButton.classList.remove("active");
+}
+
+function togglePauseTts() {
+  if (!ttsState.active) return;
+  if (ttsState.paused) {
+    speechSynthesis.resume();
+    ttsState.paused = false;
+    dom.ttsPlay.textContent = "⏸";
+    dom.ttsPlay.title = "暂停";
+  } else {
+    speechSynthesis.pause();
+    ttsState.paused = true;
+    dom.ttsPlay.textContent = "▶";
+    dom.ttsPlay.title = "继续";
+  }
+}
+
+function jumpTtsBlock(step) {
+  if (!ttsState.active) return;
+  const next = clamp(ttsState.blockIndex + step, 0, virtualBook.blocks.length - 1);
+  if (next === ttsState.blockIndex) return;
+  ttsState.blockIndex = next;
+  ttsState.paused = false;
+  dom.ttsPlay.textContent = "⏸";
+  speakCurrentTtsBlock();
+}
+
+function speakCurrentTtsBlock() {
+  if (!ttsState.active) return;
+  const block = virtualBook.blocks[ttsState.blockIndex];
+  if (!block) {
+    stopTts();
+    return;
+  }
+  const text = (block.text || "").trim();
+  if (!text) {
+    ttsState.blockIndex += 1;
+    speakCurrentTtsBlock();
+    return;
+  }
+
+  // 跟随阅读位置：把朗读段滚到视野中央，并加段级高亮
+  state.currentChapterIndex = block.chapterIndex;
+  scrollBlockIntoTtsView(ttsState.blockIndex);
+  highlightTtsBlock(ttsState.blockIndex);
+  // 段切换时拆当前段 DOM 成 sentence span overlay，准备句级高亮
+  prepareTtsSentenceOverlay(ttsState.blockIndex, block);
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = clamp(Number(state.settings.ttsRate) || 1, 0.5, 2.5);
+  const voice = pickTtsVoiceForText(text);
+  if (voice) {
+    utterance.voice = voice;
+    utterance.lang = voice.lang;
+  }
+  setupTtsBoundary(utterance, text);
+
+  utterance.onend = () => {
+    if (!ttsState.active || ttsState.utterance !== utterance) return;
+    // 自动接下一段
+    if (ttsState.blockIndex < virtualBook.blocks.length - 1) {
+      ttsState.blockIndex += 1;
+      speakCurrentTtsBlock();
+    } else {
+      stopTts();
+    }
+  };
+  utterance.onerror = (e) => {
+    // "interrupted" 是 cancel 自身造成的，不算错误
+    if (e?.error === "interrupted" || e?.error === "canceled") return;
+    stopTts();
+  };
+
+  ttsState.utterance = utterance;
+  try { speechSynthesis.cancel(); } catch {}
+  speechSynthesis.speak(utterance);
+
+  // Chrome 长文本朗读 ~15s 后会自动暂停的 bug：用 pause/resume 心跳保活
+  if (ttsResumeTimer) clearInterval(ttsResumeTimer);
+  ttsResumeTimer = setInterval(() => {
+    if (!ttsState.active) return;
+    if (!ttsState.paused && speechSynthesis.speaking && speechSynthesis.paused) {
+      speechSynthesis.resume();
+    }
+  }, 10000);
+}
+
+// 朗读时让正在读的段滚到视野中央：已在视野不滚，避开虚拟列表抖动
+function scrollBlockIntoTtsView(blockIndex) {
+  const offset = virtualBook.offsets[blockIndex] || 0;
+  const blockHeight = virtualBook.blocks[blockIndex]?.height || 0;
+  const viewportTop = dom.reader.scrollTop;
+  const viewportBottom = viewportTop + dom.reader.clientHeight;
+  const blockBottom = offset + blockHeight;
+  // 段完全在视野内 → 不滚；否则把段顶滚到上 1/3 处
+  if (offset < viewportTop + 80 || blockBottom > viewportBottom - 80) {
+    const target = Math.max(0, offset - dom.reader.clientHeight * 0.3);
+    dom.reader.scrollTo({ top: target, behavior: "smooth" });
+  }
+}
+
+function findBlockDomNode(blockIndex) {
+  return dom.reader.querySelector(`[data-virtual-index="${blockIndex}"]`);
+}
+
+function clearTtsBlockHighlight() {
+  dom.reader.querySelectorAll(".tts-block-active").forEach((el) => el.classList.remove("tts-block-active"));
+}
+
+function highlightTtsBlock(blockIndex) {
+  clearTtsBlockHighlight();
+  const node = findBlockDomNode(blockIndex);
+  if (node) node.classList.add("tts-block-active");
+}
+
+// ============ TTS 句级高亮：在朗读段的 DOM 上拆 sentence span ============
+
+// overlay 结构：{ container, sentences: [{el, start, end}], originalNodes }
+function prepareTtsSentenceOverlay(blockIndex, block) {
+  removeTtsOverlay();
+  const blockNode = findBlockDomNode(blockIndex);
+  if (!blockNode) return;
+  // 对双栏对照拿原文 cell，对普通段落直接拿段本身
+  const target = blockNode.classList.contains("sentence-pair")
+    ? blockNode.querySelector(".original-cell")
+    : blockNode;
+  if (!target) return;
+
+  const sentencesWithRange = splitSentencesWithRanges(block.text || "");
+  if (!sentencesWithRange.length) return;
+
+  const originalNodes = [...target.childNodes].map((n) => n.cloneNode(true));
+  target.replaceChildren();
+  const sentenceEls = [];
+  sentencesWithRange.forEach((s, i) => {
+    if (i > 0) {
+      const prevEnd = sentencesWithRange[i - 1].text.slice(-1);
+      if (prevEnd && !/[。！？；…]/.test(prevEnd)) target.append(" ");
+    }
+    const span = document.createElement("span");
+    span.className = "tts-sentence";
+    span.dataset.ttsIndex = String(i);
+    span.textContent = s.text;
+    target.append(span);
+    sentenceEls.push({ el: span, start: s.start, end: s.end });
+  });
+
+  ttsState.overlay = { container: target, sentences: sentenceEls, originalNodes };
+}
+
+function removeTtsOverlay() {
+  const overlay = ttsState.overlay;
+  if (!overlay) return;
+  try {
+    overlay.container.replaceChildren(...overlay.originalNodes);
+  } catch {
+    // DOM 已被虚拟列表回收：忽略
+  }
+  ttsState.overlay = null;
+}
+
+function setupTtsBoundary(utterance, text) {
+  utterance.onboundary = (event) => {
+    if (!ttsState.active || ttsState.utterance !== utterance) return;
+    const overlay = ttsState.overlay;
+    if (!overlay) return;
+    const charIndex = event.charIndex;
+    if (typeof charIndex !== "number") return;
+    const idx = overlay.sentences.findIndex((s) => charIndex >= s.start && charIndex < s.end);
+    if (idx < 0) return;
+    overlay.sentences.forEach((s, i) => s.el.classList.toggle("is-active", i === idx));
+  };
+}
+
+// 把段落原文切句并记录每句在 text 里的字符区间，用于 onboundary 反查当前句
+function splitSentencesWithRanges(text) {
+  const sentences = splitSentences(text);
+  const ranges = [];
+  let cursor = 0;
+  sentences.forEach((sentence) => {
+    if (!sentence) return;
+    const idx = text.indexOf(sentence, cursor);
+    if (idx < 0) return;
+    ranges.push({ text: sentence, start: idx, end: idx + sentence.length });
+    cursor = idx + sentence.length;
+  });
+  return ranges;
+}
+
+// ============ TTS voice 列表 + 自动选 voice + 设置同步 ============
+
+function ensureTtsVoicesLoaded() {
+  if (!ttsSupported()) return;
+  ttsVoices = speechSynthesis.getVoices() || [];
+  if (!ttsVoices.length) {
+    // voiceschanged 事件会异步触发 refreshTtsVoiceList
+    return;
+  }
+  refreshTtsVoiceList();
+}
+
+function refreshTtsVoiceList() {
+  if (!ttsSupported()) return;
+  ttsVoices = speechSynthesis.getVoices() || [];
+  // 渲染下拉，按语言分组
+  dom.ttsVoice.replaceChildren();
+  const auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "自动";
+  dom.ttsVoice.append(auto);
+  ttsVoices.forEach((voice) => {
+    const opt = document.createElement("option");
+    opt.value = voice.voiceURI;
+    opt.textContent = `${voice.name} (${voice.lang})`;
+    dom.ttsVoice.append(opt);
+  });
+  // 选回上次的 voice（如果还在）
+  const preferred = state.settings.ttsVoiceURI || "";
+  if (preferred && ttsVoices.some((v) => v.voiceURI === preferred)) {
+    dom.ttsVoice.value = preferred;
+  }
+}
+
+// 段内主要是 CJK 字符 → 优先中文 voice；否则用英文 voice；都没有再回退
+function pickTtsVoiceForText(text) {
+  if (!ttsVoices.length) return null;
+  const preferredURI = state.settings.ttsVoiceURI;
+  if (preferredURI) {
+    const found = ttsVoices.find((v) => v.voiceURI === preferredURI);
+    if (found) return found;
+  }
+  const cjk = (text.match(/[㐀-鿿]/g) || []).length;
+  const total = text.length || 1;
+  const lang = cjk / total > 0.3 ? /^zh/i : /^en/i;
+  return (
+    ttsVoices.find((v) => lang.test(v.lang)) ||
+    ttsVoices.find((v) => v.default) ||
+    ttsVoices[0] ||
+    null
+  );
+}
+
+function handleTtsRateChange(event) {
+  const rate = clamp(Number(event.target.value) || 1, 0.5, 2.5);
+  state.settings.ttsRate = rate;
+  saveState();
+  applyTtsRateUI();
+  // 即时生效：当前 utterance 改不了 rate，重启当前段
+  if (ttsState.active && ttsState.utterance) speakCurrentTtsBlock();
+}
+
+function applyTtsRateUI() {
+  const rate = Number(state.settings.ttsRate) || 1;
+  dom.ttsRate.value = String(rate);
+  dom.ttsRateValue.textContent = `${rate.toFixed(1)}×`;
+}
+
+function handleTtsVoiceChange(event) {
+  state.settings.ttsVoiceURI = event.target.value || "";
+  saveState();
+  if (ttsState.active) speakCurrentTtsBlock();
+}
+
+function showTtsBar() {
+  dom.ttsBar.hidden = false;
+}
+
+function hideTtsBar() {
+  dom.ttsBar.hidden = true;
+  dom.ttsPlay.textContent = "⏸";
+  dom.ttsPlay.title = "暂停 / 继续";
+}
+
+// 查词弹窗里的"朗读"按钮：独立的短朗读，不影响主朗读队列
+function speakLookupWord(word) {
+  if (!ttsSupported() || !word) return;
+  ensureTtsVoicesLoaded();
+  // 如果主朗读在进行，先停下避免被覆盖；用户再点工具栏才会重新开始
+  if (ttsState.active) stopTts();
+  try { speechSynthesis.cancel(); } catch {}
+  const utterance = new SpeechSynthesisUtterance(word);
+  const voice = pickTtsVoiceForText(word);
+  if (voice) {
+    utterance.voice = voice;
+    utterance.lang = voice.lang;
+  }
+  utterance.rate = clamp(Number(state.settings.ttsRate) || 1, 0.5, 2.5);
+  speechSynthesis.speak(utterance);
+}
+
 // 渲染列表：按 createdAt 倒序 + 按 marksFilter 过滤
 function renderMarksList() {
   const list = dom.marksList;
@@ -3526,6 +3925,7 @@ function clearBook() {
   closeMarksPanel();
   closeTocPanel();
   closeSearchPanel();
+  stopTts();
   closeMarkContextMenu();
   state = {
     ...defaultState,
