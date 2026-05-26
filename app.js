@@ -1259,6 +1259,11 @@ function restoreTtsStateIfVisible() {
     if (block) {
       highlightTtsBlock(ttsState.blockIndex);
       prepareTtsSentenceOverlay(ttsState.blockIndex, block);
+      // 重建 overlay 后立即恢复当前句的 .is-active / .is-spoken，
+      // 否则用户滚动时高亮会消失直到下一句开始才回来
+      if (ttsState.sentenceIndex >= 0) {
+        applyTtsHighlight(ttsState.sentenceIndex);
+      }
     }
   }
 }
