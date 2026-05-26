@@ -3569,6 +3569,7 @@ function prepareTtsSentenceOverlay(blockIndex, block) {
     }
     const span = document.createElement("span");
     span.className = "tts-sentence";
+    if (i === 0) span.classList.add("is-active");
     span.dataset.ttsIndex = String(i);
     span.textContent = s.text;
     target.append(span);
@@ -3598,7 +3599,10 @@ function setupTtsBoundary(utterance, text) {
     if (typeof charIndex !== "number") return;
     const idx = overlay.sentences.findIndex((s) => charIndex >= s.start && charIndex < s.end);
     if (idx < 0) return;
-    overlay.sentences.forEach((s, i) => s.el.classList.toggle("is-active", i === idx));
+    overlay.sentences.forEach((s, i) => {
+      s.el.classList.toggle("is-active", i === idx);
+      s.el.classList.toggle("is-spoken", i < idx);
+    });
   };
 }
 
