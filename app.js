@@ -3458,17 +3458,11 @@ const ttsState = {
   active: false,
   paused: false,
   blockIndex: -1,
-  sentenceIndex: 0, // 跟踪当前段落中正在朗读的句子索引
+  sentenceIndex: 0,
   utterance: null,
   // 当前段在 DOM 中被改写成 sentence span overlay 后的引用，便于句级高亮和恢复
   overlay: null,
-  lastBlockIndex: -1, // 保存上次朗读的位置，以支持精准续读
-  
-  // 备用计时器（与 onboundary 共同推进高亮，互不禁用，applyTtsSentenceHighlight 内单向前进）
-  timerId: 0,
-  startTime: 0,
-  elapsedOffset: 0,
-  sentenceEndTimes: [],
+  lastBlockIndex: -1, // 上次朗读到哪段，支持续读
 };
 let ttsVoices = [];
 let ttsResumeTimer = 0;
@@ -3524,11 +3518,8 @@ function stopTts() {
     ttsResumeTimer = 0;
   }
   try { speechSynthesis.cancel(); } catch {}
-  
-  // 停止前保存最后播放的段落位置，用以支持精准续读
+  // 停止前记下最后段位置，下次点朗读可续读
   ttsState.lastBlockIndex = ttsState.blockIndex;
-  
-  clearTtsTimer();
   removeTtsOverlay();
   clearTtsBlockHighlight();
   ttsState.active = false;
@@ -3609,19 +3600,11 @@ function togglePauseTts() {
     ttsState.paused = false;
     dom.ttsPlay.textContent = "⏸";
     dom.ttsPlay.title = "暂停";
-    
-    // 恢复计时
-    ttsState.startTime = performance.now();
-    startTtsTimer();
   } else {
     speechSynthesis.pause();
     ttsState.paused = true;
     dom.ttsPlay.textContent = "▶";
     dom.ttsPlay.title = "继续";
-    
-    // 暂停并记录已度过时间偏移量
-    ttsState.elapsedOffset += performance.now() - ttsState.startTime;
-    pauseTtsTimer();
   }
 }
 
@@ -3635,6 +3618,7 @@ function jumpTtsBlock(step) {
   speakCurrentTtsBlock();
 }
 
+// 段切换：准备 overlay + 段级高亮 + 滚到视野，然后开始读第 0 句
 function speakCurrentTtsBlock() {
   if (!ttsState.active) return;
   const block = virtualBook.blocks[ttsState.blockIndex];
@@ -3649,77 +3633,13 @@ function speakCurrentTtsBlock() {
     return;
   }
 
-  // 跟随阅读位置：把朗读段滚到视野中央，并加段级高亮
   state.currentChapterIndex = block.chapterIndex;
   scrollBlockIntoTtsView(ttsState.blockIndex);
   highlightTtsBlock(ttsState.blockIndex);
-  ttsState.sentenceIndex = 0;
-  // 段切换时拆当前段 DOM 成 sentence span overlay，准备句级高亮
   prepareTtsSentenceOverlay(ttsState.blockIndex, block);
 
-  // 初始化备用计时器状态（不立即开启，等待真正发音时开启）
-  ttsState.elapsedOffset = 0;
-  clearTtsTimer();
-
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = clamp(Number(state.settings.ttsRate) || 1, 0.5, 2.5);
-  const voice = pickTtsVoiceForText(text);
-  if (voice) {
-    utterance.voice = voice;
-    utterance.lang = voice.lang;
-  }
-  setupTtsBoundary(utterance, text);
-
-  utterance.onstart = () => {
-    if (!ttsState.active || ttsState.utterance !== utterance) return;
-    ttsState.startTime = performance.now();
-    ttsState.elapsedOffset = 0;
-    startTtsTimer();
-  };
-
-  utterance.onresume = () => {
-    if (!ttsState.active || ttsState.utterance !== utterance) return;
-    ttsState.startTime = performance.now();
-    startTtsTimer();
-  };
-
-  utterance.onpause = () => {
-    if (!ttsState.active || ttsState.utterance !== utterance) return;
-    ttsState.elapsedOffset += performance.now() - ttsState.startTime;
-    pauseTtsTimer();
-  };
-
-  utterance.onend = () => {
-    if (!ttsState.active || ttsState.utterance !== utterance) return;
-    clearTtsTimer();
-    // 自动接下一段
-    if (ttsState.blockIndex < virtualBook.blocks.length - 1) {
-      ttsState.blockIndex += 1;
-      speakCurrentTtsBlock();
-    } else {
-      stopTts();
-    }
-  };
-  utterance.onerror = (e) => {
-    // "interrupted" 是 cancel 自身造成的，不算错误
-    if (e?.error === "interrupted" || e?.error === "canceled") return;
-    clearTtsTimer();
-    stopTts();
-  };
-
-  ttsState.utterance = utterance;
-  try { speechSynthesis.cancel(); } catch {}
-  speechSynthesis.speak(utterance);
-
-  // 立即启动备用计时器，不等 utterance.onstart：
-  // 部分 Windows 系统 voice 根本不触发 onstart，结果备用计时器永远不跑，
-  // 加上 onboundary 在某些 voice 上也不稳定，高亮就卡在第一句。
-  // onstart 真触发的话会在 onstart 回调里再次校准 startTime，更精准。
-  ttsState.startTime = performance.now();
-  ttsState.elapsedOffset = 0;
-  startTtsTimer();
-
-  // Chrome 长文本朗读 ~15s 后会自动暂停的 bug：用 pause/resume 心跳保活
+  // Chrome 长 utterance ~15s 自动暂停的 bug：心跳保活
+  // 现在每句独立 utterance，大多数英文句子 < 15s，不会触发；但留作兜底
   if (ttsResumeTimer) clearInterval(ttsResumeTimer);
   ttsResumeTimer = setInterval(() => {
     if (!ttsState.active) return;
@@ -3727,6 +3647,72 @@ function speakCurrentTtsBlock() {
       speechSynthesis.resume();
     }
   }, 10000);
+
+  // 句索引重置到 -1，让 speakSentenceInBlock(0) 能正常 highlight 第 0 句
+  ttsState.sentenceIndex = -1;
+  speakSentenceInBlock(0);
+}
+
+// 段内某一句独立 speak：每句一个 utterance，onend 时切下一句，
+// 高亮 100% 跟着 utterance 生命周期，不依赖任何 timer/boundary
+function speakSentenceInBlock(sentenceIdx) {
+  if (!ttsState.active) return;
+  const overlay = ttsState.overlay;
+  if (!overlay) {
+    advanceTtsBlock();
+    return;
+  }
+  const sentence = overlay.sentences[sentenceIdx];
+  if (!sentence) {
+    advanceTtsBlock();
+    return;
+  }
+
+  // 切高亮：当前句 active，前面句 spoken
+  applyTtsHighlight(sentenceIdx);
+
+  const text = sentence.el.textContent || "";
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = clamp(Number(state.settings.ttsRate) || 1, 0.5, 2.5);
+  const voice = pickTtsVoiceForText(text);
+  if (voice) {
+    utterance.voice = voice;
+    utterance.lang = voice.lang;
+  }
+
+  utterance.onend = () => {
+    if (!ttsState.active || ttsState.utterance !== utterance) return;
+    // 接下一句
+    speakSentenceInBlock(sentenceIdx + 1);
+  };
+  utterance.onerror = (e) => {
+    if (e?.error === "interrupted" || e?.error === "canceled") return;
+    stopTts();
+  };
+
+  ttsState.utterance = utterance;
+  try { speechSynthesis.cancel(); } catch {}
+  speechSynthesis.speak(utterance);
+}
+
+function advanceTtsBlock() {
+  if (ttsState.blockIndex < virtualBook.blocks.length - 1) {
+    ttsState.blockIndex += 1;
+    speakCurrentTtsBlock();
+  } else {
+    stopTts();
+  }
+}
+
+// 强制更新句高亮（不走"只前进不倒退"早退）：换段/换句时直接切
+function applyTtsHighlight(sentenceIdx) {
+  const overlay = ttsState.overlay;
+  if (!overlay) return;
+  ttsState.sentenceIndex = sentenceIdx;
+  overlay.sentences.forEach((s, i) => {
+    s.el.classList.toggle("is-active", i === sentenceIdx);
+    s.el.classList.toggle("is-spoken", i < sentenceIdx);
+  });
 }
 
 // 朗读时让正在读的段滚到视野中央：已在视野不滚，避开虚拟列表抖动
@@ -3774,13 +3760,6 @@ function prepareTtsSentenceOverlay(blockIndex, block) {
   const sentencesWithRange = splitSentencesWithRanges(normalizedText);
   if (!sentencesWithRange.length) return;
 
-  // 预先计算各句在 1.0x 速率下的累积播放时间截止点，用于备用计时器
-  let accum = 0;
-  ttsState.sentenceEndTimes = sentencesWithRange.map((s) => {
-    accum += getSentenceBaseDuration(s.text);
-    return accum;
-  });
-
   const originalNodes = [...target.childNodes].map((n) => n.cloneNode(true));
   target.replaceChildren();
   const sentenceEls = [];
@@ -3791,12 +3770,6 @@ function prepareTtsSentenceOverlay(blockIndex, block) {
     }
     const span = document.createElement("span");
     span.className = "tts-sentence";
-    const currentIdx = ttsState.sentenceIndex ?? 0;
-    if (i === currentIdx) {
-      span.classList.add("is-active");
-    } else if (i < currentIdx) {
-      span.classList.add("is-spoken");
-    }
     span.dataset.ttsIndex = String(i);
     span.textContent = s.text;
     target.append(span);
@@ -3804,6 +3777,7 @@ function prepareTtsSentenceOverlay(blockIndex, block) {
   });
 
   ttsState.overlay = { container: target, sentences: sentenceEls, originalNodes };
+  // 高亮交由 speakSentenceInBlock 即时调用 applyTtsHighlight 控制，不在 overlay 创建时预设
 }
 
 function removeTtsOverlay() {

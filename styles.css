@@ -323,22 +323,23 @@ button {
 }
 
 /* TTS 控制浮条：朗读时显示在底部，停止时整条隐藏 */
+/* 朗读控制浮条：紧凑一行，不打扰阅读，朗读时才出现 */
 .tts-bar {
   position: absolute;
   z-index: 7;
   left: 50%;
-  bottom: 18px;
+  bottom: 14px;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 14px;
-  max-width: calc(100% - 40px);
-  padding: 8px 14px;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  padding: 4px 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: color-mix(in srgb, var(--panel) 96%, transparent);
   box-shadow: var(--shadow);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .tts-bar[hidden] {
@@ -346,14 +347,15 @@ button {
 }
 
 .tts-bar-button {
-  min-width: 34px;
-  height: 30px;
-  padding: 0 10px;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 7px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--panel-soft);
   color: var(--reader-ink);
-  font-size: 15px;
+  font-size: 12px;
+  line-height: 1;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
@@ -376,28 +378,29 @@ button {
 .tts-bar-field {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 4px;
+  font-size: 11px;
   color: var(--muted);
 }
 
 .tts-bar-field input[type="range"] {
-  width: 100px;
+  width: 70px;
 }
 
 .tts-bar-field select {
-  max-width: 180px;
-  padding: 3px 6px;
+  max-width: 130px;
+  padding: 1px 4px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 4px;
   background: var(--panel-soft);
   color: var(--reader-ink);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .tts-bar-value {
   font-variant-numeric: tabular-nums;
-  min-width: 32px;
+  min-width: 26px;
+  font-size: 11px;
 }
 
 /* 朗读段级高亮：左侧色条 + 较明显背景，首次定位一眼就能看到 */
