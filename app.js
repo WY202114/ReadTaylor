@@ -3610,7 +3610,8 @@ function prepareTtsSentenceOverlay(blockIndex, block) {
     : blockNode;
   if (!target) return;
 
-  const sentencesWithRange = splitSentencesWithRanges(block.text || "");
+  const normalizedText = normalizeText(block.text || "").replace(/\n+/g, " ").replace(/[ \t]+/g, " ").trim();
+  const sentencesWithRange = splitSentencesWithRanges(normalizedText);
   if (!sentencesWithRange.length) return;
 
   const originalNodes = [...target.childNodes].map((n) => n.cloneNode(true));
@@ -3656,7 +3657,14 @@ function setupTtsBoundary(utterance, text) {
     if (!overlay) return;
     const charIndex = event.charIndex;
     if (typeof charIndex !== "number") return;
-    const idx = overlay.sentences.findIndex((s) => charIndex >= s.start && charIndex < s.end);
+    let idx = overlay.sentences.findIndex((s) => charIndex >= s.start && charIndex < s.end);
+    if (idx < 0) {
+      // 容错：若恰好落在句子间隙（如空格或句尾标点），则取当前 charIndex 之前的最后一句
+      idx = overlay.sentences.findIndex((s, i) => {
+        const next = overlay.sentences[i + 1];
+        return charIndex >= s.start && (!next || charIndex < next.start);
+      });
+    }
     if (idx < 0) return;
     ttsState.sentenceIndex = idx;
     overlay.sentences.forEach((s, i) => {
