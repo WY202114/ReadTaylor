@@ -2999,13 +2999,24 @@ function handleReaderContextMenu(event) {
   const selectedText = liveText || cachedFresh?.text || "";
   const hasSelection = Boolean(selectedText);
 
-  // 选区落点优先：选了字就用选区所在 block，没选就用当前滚动位置
+  // 选区落点优先：选了字就用选区所在 block，没选就优先使用右键点击元素所在的 block，最后用滚动位置兜底
   let blockInfo = null;
   if (liveText) {
     blockInfo = findBlockFromSelection(selection);
   } else if (cachedFresh) {
     blockInfo = findBlockFromCachedNode(cachedFresh.anchorNode || cachedFresh.focusNode);
   }
+
+  if (!blockInfo && event.target) {
+    const blockEl = event.target.closest("[data-virtual-index]");
+    if (blockEl) {
+      const blockIndex = Number(blockEl.dataset.virtualIndex);
+      if (!Number.isNaN(blockIndex)) {
+        blockInfo = { blockIndex, block: virtualBook.blocks[blockIndex] || null };
+      }
+    }
+  }
+
   if (!blockInfo) blockInfo = getCurrentBlockInfo();
 
   openMarkContextMenu(event.clientX, event.clientY, blockInfo, hasSelection ? selectedText : "");
@@ -3025,7 +3036,7 @@ function openMarkContextMenu(clientX, clientY, blockInfo, selectedText) {
   const menu = document.createElement("div");
   menu.className = "mark-context-menu";
 
-  // 有选区给 5 个选项（书签 + 4 个标签）；没选区只能加书签
+  // 有选区给 5 个选项（书签 + 4 个标签）；没选区提供朗读此段与加书签
   const options = selectedText
     ? [
         { label: "加为书签", type: "bookmark", tag: null, toast: "已加书签" },
@@ -3035,6 +3046,7 @@ function openMarkContextMenu(clientX, clientY, blockInfo, selectedText) {
         { label: "标记为语法", type: "note", tag: "grammar", toast: "已标记为语法" },
       ]
     : [
+        { label: "朗读此段", type: "tts", tag: null, toast: null },
         { label: "在当前位置加书签", type: "bookmark", tag: null, toast: "已加书签" },
       ];
 
@@ -3044,8 +3056,12 @@ function openMarkContextMenu(clientX, clientY, blockInfo, selectedText) {
     btn.className = "mark-context-menu-item";
     btn.textContent = opt.label;
     btn.addEventListener("click", () => {
-      if (appendMark(opt, blockInfo, selectedText)) {
-        showToast(opt.toast);
+      if (opt.type === "tts") {
+        startTts(blockInfo.blockIndex);
+      } else {
+        if (appendMark(opt, blockInfo, selectedText)) {
+          showToast(opt.toast);
+        }
       }
       closeMarkContextMenu();
     });
@@ -3495,12 +3511,11 @@ function getSentenceBaseDuration(text) {
   const cjkCount = (text.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
   const totalLen = text.length || 1;
   const isCjk = (cjkCount / totalLen) > 0.3;
-  // 预设中英文在 1.0x 速率下的每秒朗读字符数
-  // 中文：每秒约 5.5 个字；英文：每秒约 14.5 个字符（含空格）
-  const charSpeed = isCjk ? 5.5 : 14.5;
+  // 优化后的中英文朗读速率常量（每秒朗读字符数），匹配主流系统和浏览器默认语音包的实际语速
+  const charSpeed = isCjk ? 7.2 : 20.0;
   
-  // 基础朗读时间（毫秒），并为短句加上一点停顿缓冲时间（400ms）
-  return (totalLen / charSpeed) * 1000 + 400;
+  // 句末微小停顿缓冲时间调整为 100ms，防止多句叠加后高亮出现明显滞后
+  return (totalLen / charSpeed) * 1000 + 100;
 }
 
 function startTtsTimer() {
@@ -3605,11 +3620,10 @@ function speakCurrentTtsBlock() {
   // 段切换时拆当前段 DOM 成 sentence span overlay，准备句级高亮
   prepareTtsSentenceOverlay(ttsState.blockIndex, block);
 
-  // 初始化备用计时器状态并开启
-  ttsState.startTime = performance.now();
+  // 初始化备用计时器状态（不立即开启，等待真正发音时开启）
   ttsState.elapsedOffset = 0;
   ttsState.hasNativeBoundary = false;
-  startTtsTimer();
+  clearTtsTimer();
 
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.rate = clamp(Number(state.settings.ttsRate) || 1, 0.5, 2.5);
@@ -3620,8 +3634,28 @@ function speakCurrentTtsBlock() {
   }
   setupTtsBoundary(utterance, text);
 
+  utterance.onstart = () => {
+    if (!ttsState.active || ttsState.utterance !== utterance) return;
+    ttsState.startTime = performance.now();
+    ttsState.elapsedOffset = 0;
+    startTtsTimer();
+  };
+
+  utterance.onresume = () => {
+    if (!ttsState.active || ttsState.utterance !== utterance) return;
+    ttsState.startTime = performance.now();
+    startTtsTimer();
+  };
+
+  utterance.onpause = () => {
+    if (!ttsState.active || ttsState.utterance !== utterance) return;
+    ttsState.elapsedOffset += performance.now() - ttsState.startTime;
+    pauseTtsTimer();
+  };
+
   utterance.onend = () => {
     if (!ttsState.active || ttsState.utterance !== utterance) return;
+    clearTtsTimer();
     // 自动接下一段
     if (ttsState.blockIndex < virtualBook.blocks.length - 1) {
       ttsState.blockIndex += 1;
@@ -3633,6 +3667,7 @@ function speakCurrentTtsBlock() {
   utterance.onerror = (e) => {
     // "interrupted" 是 cancel 自身造成的，不算错误
     if (e?.error === "interrupted" || e?.error === "canceled") return;
+    clearTtsTimer();
     stopTts();
   };
 
@@ -3745,6 +3780,10 @@ function setupTtsBoundary(utterance, text) {
     if (!overlay) return;
     const charIndex = event.charIndex;
     if (typeof charIndex !== "number") return;
+    
+    // 标记原生 boundary 可用，使 fallback 计时器停止覆写高亮
+    ttsState.hasNativeBoundary = true;
+    
     let idx = overlay.sentences.findIndex((s) => charIndex >= s.start && charIndex < s.end);
     if (idx < 0) {
       // 容错：若恰好落在句子间隙（如空格或句尾标点），则取当前 charIndex 之前的最后一句

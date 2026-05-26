@@ -425,10 +425,10 @@ button {
    不会被频繁切换的 box 抢走焦点 */
 .tts-sentence {
   transition:
-    color 0.25s ease,
-    opacity 0.25s ease,
-    background-color 0.25s ease,
-    box-shadow 0.25s ease;
+    color 0.1s ease,
+    opacity 0.1s ease,
+    background-color 0.1s ease,
+    box-shadow 0.1s ease;
 }
 
 .tts-sentence.is-spoken {
