@@ -516,7 +516,9 @@ button {
     minmax(0, calc((1 - var(--parallel-ratio, 0.5)) * (100% - 24px)));
   gap: 24px;
   align-items: start;
-  padding: 8px 12px;
+  /* 不再加上下 padding：段距已由内部 .sentence-cell 的 margin-bottom 提供，
+     与原文模式 .reader-content p 的 1em 段距保持一致 */
+  padding: 0 12px;
   margin: 0 -12px;
   /* 段落级容器只负责两栏对齐；点击交互移到段内的 .sentence-piece */
   border-radius: 6px;
