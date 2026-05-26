@@ -3711,6 +3711,14 @@ function speakCurrentTtsBlock() {
   try { speechSynthesis.cancel(); } catch {}
   speechSynthesis.speak(utterance);
 
+  // 立即启动备用计时器，不等 utterance.onstart：
+  // 部分 Windows 系统 voice 根本不触发 onstart，结果备用计时器永远不跑，
+  // 加上 onboundary 在某些 voice 上也不稳定，高亮就卡在第一句。
+  // onstart 真触发的话会在 onstart 回调里再次校准 startTime，更精准。
+  ttsState.startTime = performance.now();
+  ttsState.elapsedOffset = 0;
+  startTtsTimer();
+
   // Chrome 长文本朗读 ~15s 后会自动暂停的 bug：用 pause/resume 心跳保活
   if (ttsResumeTimer) clearInterval(ttsResumeTimer);
   ttsResumeTimer = setInterval(() => {
