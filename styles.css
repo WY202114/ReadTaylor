@@ -518,7 +518,6 @@ button {
   align-items: start;
   padding: 8px 12px;
   margin: 0 -12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
   /* 段落级容器只负责两栏对齐；点击交互移到段内的 .sentence-piece */
   border-radius: 6px;
   transition:
