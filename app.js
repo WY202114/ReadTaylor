@@ -301,6 +301,8 @@ async function parseEpubFile(file) {
   const metadata = await book.loaded.metadata.catch(() => ({}));
   await book.ready;
 
+  const bookTitle = metadata?.title || file.name.replace(/\.[^.]+$/, "");
+
   // 尝试用 NCX/Nav 拿到友好的章节标题（按 href 映射）
   const navTitleByHref = await loadEpubNavTitles(book);
 
@@ -322,9 +324,9 @@ async function parseEpubFile(file) {
 
       const title =
         lookupNavTitle(navTitleByHref, href) ||
-        getEpubSectionTitle(doc) ||
+        getEpubSectionTitle(doc, bookTitle) ||
         (item.label && item.label.trim()) ||
-        `第 ${chapters.length + 1} 节`;
+        "";
 
       chapters.push({
         title: String(title).trim(),
@@ -346,8 +348,11 @@ async function parseEpubFile(file) {
     throw new Error("没有从 EPUB 中读取到正文内容。");
   }
 
+  // 兜底：标题为空或多章重复时，改用 "第 N 章 · 正文预览"
+  dedupeChapterTitles(chapters);
+
   return {
-    title: metadata?.title || file.name.replace(/\.[^.]+$/, ""),
+    title: bookTitle,
     chapters,
   };
 }
@@ -434,15 +439,38 @@ async function parsePdfFile(file) {
   };
 }
 
-function getEpubSectionTitle(doc) {
+function getEpubSectionTitle(doc, bookTitle = "") {
   // 只从 body 里找标题元素：head 里的 <title> 几乎都是整本书名，
-  // 用它会让所有章节同名（"Rich Dad Poor Dad" 那种）
+  // 用它会让所有章节同名（"Rich Dad Poor Dad" 那种）。
+  // 再跳过和书名相同的 heading：很多 EPUB 每章 body 开头都重复书名，
+  // 真正的章节标题往往在第二个 h2/h3。
   const root = doc.body || doc.documentElement || doc;
-  const heading = root.querySelector("h1, h2, h3, h4, h5, h6");
-  if (heading?.textContent?.trim()) return heading.textContent.trim();
-  const epubTitle = root.querySelector("[epub\\:type='title']");
-  if (epubTitle?.textContent?.trim()) return epubTitle.textContent.trim();
+  const normalizedBook = bookTitle.trim().toLowerCase();
+  const headings = root.querySelectorAll("h1, h2, h3, h4, h5, h6, [epub\\:type='title']");
+  for (const heading of headings) {
+    const text = (heading.textContent || "").trim();
+    if (!text) continue;
+    if (normalizedBook && text.toLowerCase() === normalizedBook) continue;
+    return text;
+  }
   return "";
+}
+
+// 多个章节标题相同时，给重复项追加 "第 N 章 · 开头预览"，
+// 避免目录里整列都是同一行字（比如盗版 EPUB 每章重复书名）
+function dedupeChapterTitles(chapters) {
+  const counts = new Map();
+  chapters.forEach((c) => {
+    const key = (c.title || "").trim();
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  chapters.forEach((c, i) => {
+    const key = (c.title || "").trim();
+    if (!key || counts.get(key) > 1) {
+      const preview = (c.text || "").trim().slice(0, 24).replace(/\s+/g, " ");
+      c.title = preview ? `第 ${i + 1} 章 · ${preview}` : `第 ${i + 1} 章`;
+    }
+  });
 }
 
 function getDocumentText(doc) {
