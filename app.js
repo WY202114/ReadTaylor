@@ -717,6 +717,7 @@ function renderReader() {
     dom.reader.innerHTML = `
       <section class="empty-state">
         <div class="empty-art" aria-hidden="true"><div></div><span></span></div>
+        <span class="empty-eyebrow">ReadTaylor</span>
         <h2>导入一本电子书</h2>
         <p>支持 TXT、EPUB 和 PDF 阅读；导入前可以手动选择格式，也可以让网站按文件后缀自动识别。</p>
         <label class="inline-import" for="book-file">选择文件</label>
@@ -1666,10 +1667,7 @@ function saveBookmark() {
     createdAt: Date.now(),
   };
   saveState();
-  dom.bookmarkButton.textContent = "已标记";
-  window.setTimeout(() => {
-    dom.bookmarkButton.textContent = "书签";
-  }, 1100);
+  showToast("已加书签");
   updateButtons();
 }
 

@@ -4,9 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ReadTaylor</title>
+    <meta name="description" content="ReadTaylor 是一个支持 TXT、EPUB、PDF 的本地小说阅读器。" />
+    <meta name="theme-color" content="#edf0ea" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <a class="skip-link" href="#reader">跳到正文</a>
     <div class="app-shell" data-theme="paper">
       <aside id="library-panel" class="library-panel" aria-label="书库">
         <div class="brand">
@@ -84,6 +87,7 @@
               <div></div>
               <span></span>
             </div>
+            <span class="empty-eyebrow">ReadTaylor</span>
             <h2>导入一本电子书</h2>
             <p>支持 TXT、EPUB 和 PDF 阅读；导入前可以手动选择格式，也可以让网站按文件后缀自动识别。</p>
             <label class="inline-import" for="book-file">选择文件</label>
