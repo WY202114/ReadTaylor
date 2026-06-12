@@ -8,3 +8,6 @@
 # 依赖和构建产物（如果用了 npm / 构建工具）
 node_modules/
 dist/
+# 本地测试用书籍文件，不提交
+test-assets/*.epub
+test-assets/*.pdf

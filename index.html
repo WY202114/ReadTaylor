@@ -15,7 +15,7 @@
     <link rel="apple-touch-icon" href="icon.svg" />
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <!-- ?v= 版本号：每次发版改一下，强制手机浏览器/中间CDN放弃旧缓存 -->
-    <link rel="stylesheet" href="styles.css?v=2026061201" />
+    <link rel="stylesheet" href="styles.css?v=2026061202" />
   </head>
   <body>
     <a class="skip-link" href="#reader">跳到正文</a>
@@ -89,6 +89,8 @@
             <button id="toc-button" class="tool-button" type="button" title="打开本书目录">目录</button>
             <!-- 我的书签：打开列表面板；加书签 / 加标记走正文右键菜单 -->
             <button id="marks-button" class="tool-button" type="button" title="打开标记列表；正文里右键可加书签/标记">我的书签</button>
+            <!-- 版式切换：EPUB/PDF 在「原样排版」和「文本模式」间切换 -->
+            <button id="layout-toggle" class="tool-button" type="button" title="原样排版 / 文本模式切换">版式</button>
             <!-- 折叠/展开底部设置栏 -->
             <button id="settings-toggle" class="tool-button" type="button" aria-expanded="false" aria-controls="reading-controls">设置</button>
           </div>
@@ -108,6 +110,15 @@
             <label class="inline-import" for="book-file">选择文件</label>
           </section>
         </article>
+
+        <!-- 原样排版阅读容器：EPUB 用 epub.js rendition、PDF 用 PDF.js 按页
+             渲染到这里；fidelity-mode 时正文 #reader 隐藏、本容器显示 -->
+        <section id="fidelity-reader" class="fidelity-reader" aria-label="原版排版阅读"></section>
+        <!-- EPUB 原样模式是章内滚动，跨章用这两个按钮（PDF 连续滚动用不到） -->
+        <div id="fidelity-nav" class="fidelity-nav" hidden>
+          <button id="fidelity-prev" type="button">‹ 上一章</button>
+          <button id="fidelity-next" type="button">下一章 ›</button>
+        </div>
 
         <section id="translator-panel" class="translator-panel" aria-label="翻译设置" hidden>
           <div class="translator-head">
@@ -269,6 +280,6 @@
       </main>
     </div>
 
-    <script src="app.js?v=2026061201"></script>
+    <script src="app.js?v=2026061202"></script>
   </body>
 </html>

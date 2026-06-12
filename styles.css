@@ -2293,3 +2293,88 @@ button:active,
     cursor: pointer;
   }
 }
+
+/* ============ 原样排版模式（fidelity）：EPUB 原版式 / PDF 按页 ============ */
+.fidelity-reader {
+  display: none;
+  position: relative;
+  width: min(100%, var(--reader-width));
+  height: 100%;
+  min-height: 0;
+  margin: 0 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--reader-bg);
+  box-shadow: var(--shadow);
+}
+
+.app-shell.fidelity-mode .reader {
+  display: none;
+}
+
+.app-shell.fidelity-mode .fidelity-reader {
+  display: block;
+}
+
+/* PDF 每页一张"纸"，居中带投影；canvas 尺寸由 JS 控制 */
+.fidelity-reader .pdf-page {
+  margin: 10px auto;
+  background: #fff;
+  box-shadow: 0 6px 22px rgba(40, 42, 38, 0.16);
+}
+
+.fidelity-reader .pdf-page canvas {
+  display: block;
+}
+
+@media (max-width: 620px) {
+  /* 手机上原样容器吃满宽度，边框圆角让位给内容。
+     顶栏在手机上是 absolute 悬浮（脱离 grid 流），1fr 行分配会错位，
+     height:100% 拿不到值，必须用视口高度显式撑开 */
+  .fidelity-reader {
+    height: calc(100dvh - 16px);
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
+  }
+
+  .fidelity-reader .pdf-page {
+    margin: 6px auto;
+  }
+}
+
+/* EPUB 原样模式的跨章按钮：浮在阅读区底部中间 */
+.fidelity-nav {
+  position: absolute;
+  z-index: 8;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+}
+
+.fidelity-nav[hidden] {
+  display: none;
+}
+
+.fidelity-nav button {
+  min-height: 34px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--reader-ink);
+  font-size: 13px;
+  box-shadow: 0 8px 22px rgba(40, 42, 38, 0.16);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.fidelity-nav button:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}

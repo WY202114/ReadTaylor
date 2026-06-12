@@ -12,6 +12,11 @@ const GOOGLE_TRANSLATE_ENDPOINT = "https://translation.googleapis.com/language/t
 const TRANSLATION_DB_NAME = "readTaylorTranslations";
 const TRANSLATION_DB_VERSION = 1;
 const TRANSLATION_STORE = "sentenceTranslations";
+// 原始书籍文件（EPUB/PDF 的完整字节）存独立 IndexedDB：
+// localStorage 放不下几 MB 的二进制，原样排版引擎需要原文件才能渲染
+const FILES_DB_NAME = "readTaylorFiles";
+const FILES_DB_VERSION = 1;
+const FILES_STORE = "bookFiles";
 
 const dom = {
   shell: document.querySelector(".app-shell"),
@@ -76,6 +81,11 @@ const dom = {
   ttsVoice: document.querySelector("#tts-voice"),
   settingsToggle: document.querySelector("#settings-toggle"),
   sidebarToggle: document.querySelector("#sidebar-toggle"),
+  layoutToggle: document.querySelector("#layout-toggle"),
+  fidelityReader: document.querySelector("#fidelity-reader"),
+  fidelityNav: document.querySelector("#fidelity-nav"),
+  fidelityPrev: document.querySelector("#fidelity-prev"),
+  fidelityNext: document.querySelector("#fidelity-next"),
   actionsMenuToggle: document.querySelector("#actions-menu-toggle"),
   actionsBackdrop: document.querySelector("#actions-backdrop"),
   toolbarActions: document.querySelector("#toolbar-actions"),
@@ -96,6 +106,9 @@ const defaultState = {
   scrollByChapter: {},
   bookmark: null,
   immersive: false,
+  // "text" = 抽文字重排（翻译/朗读全功能）；"fidelity" = 原样排版
+  // （EPUB 原版式 / PDF 按页），仅 EPUB/PDF 且存有原始文件时可用
+  viewMode: "text",
   translations: {},
   importFormat: "auto",
   translator: {
@@ -214,6 +227,7 @@ function bindEvents() {
   dom.reader.addEventListener("contextmenu", handleReaderContextMenu);
   dom.restoreBookmark.addEventListener("click", restoreBookmark);
   dom.settingsToggle.addEventListener("click", toggleReadingControls);
+  if (dom.layoutToggle) dom.layoutToggle.addEventListener("click", toggleLayoutMode);
   if (dom.sidebarToggle) dom.sidebarToggle.addEventListener("click", toggleSidebar);
   // 移动端底部功能菜单：菜单按钮开关、点遮罩关、点任一功能后自动收起
   if (dom.actionsMenuToggle) dom.actionsMenuToggle.addEventListener("click", toggleActionsMenu);
@@ -225,6 +239,12 @@ function bindEvents() {
   }
   // 顶栏滚动隐藏后，轻点正文（非拖选）把它唤回来
   dom.reader.addEventListener("click", revealToolbarOnTap);
+  // 原样排版容器：滚动联动顶栏自动隐藏 + PDF 页码跟踪；轻点唤回顶栏
+  dom.fidelityReader.addEventListener("scroll", handleFidelityScroll, { passive: true });
+  dom.fidelityReader.addEventListener("click", revealToolbarOnTap);
+  // EPUB 原样模式的跨章按钮
+  dom.fidelityPrev.addEventListener("click", () => fidelity.rendition?.prev());
+  dom.fidelityNext.addEventListener("click", () => fidelity.rendition?.next());
   // "翻译" 按钮：左键 = 一键开关；右键 / 长按 = 打开翻译设置面板
   dom.translateToggle.addEventListener("click", handleTranslateToggleClick);
   dom.translateToggle.addEventListener("contextmenu", handleTranslateToggleContextMenu);
@@ -285,8 +305,22 @@ async function handleFileImport(event) {
     const bookId = await computeFileBookId(file);
     setImportStatus(`正在导入 ${format.toUpperCase()}...`, "loading");
     const parsed = await parseBookFile(file, format);
+
+    // EPUB/PDF 把原始文件留底（IndexedDB），原样排版引擎要用；
+    // 存失败不影响导入，只是退回纯文本模式
+    let rawSaved = false;
+    if (["epub", "pdf"].includes(format)) {
+      try {
+        await saveRawBookFile(bookId, file, format);
+        rawSaved = true;
+      } catch (error) {
+        console.warn("原始文件留底失败，原样排版不可用：", error);
+      }
+    }
+
     state = {
       ...state,
+      viewMode: rawSaved ? "fidelity" : "text",
       book: {
         id: bookId,
         title: parsed.title || file.name.replace(/\.[^.]+$/, "") || "未命名书籍",
@@ -306,15 +340,18 @@ async function handleFileImport(event) {
     };
     saveState();
     renderAll();
-    // 同一本书曾经读到的位置（按 bookId 持久化）优先于 scrollTop = 0
-    const savedProgress = readProgress(bookId);
-    if (savedProgress) {
-      restoreFromProgress(savedProgress);
-      showToast("已恢复阅读位置");
-    } else {
-      restoreScroll(0);
+    // 同一本书曾经读到的位置（按 bookId 持久化）优先于 scrollTop = 0；
+    // 原样模式的恢复在 openFidelityView 里自己做，这里只管文本模式
+    if (!isFidelityActive()) {
+      const savedProgress = readProgress(bookId);
+      if (savedProgress) {
+        restoreFromProgress(savedProgress);
+        showToast("已恢复阅读位置");
+      } else {
+        restoreScroll(0);
+      }
+      dom.reader.focus();
     }
-    dom.reader.focus();
     setImportStatus(`导入完成：${parsed.chapters.length} 章`, "success");
   } catch (error) {
     setImportStatus(getImportErrorMessage(error), "error");
@@ -729,6 +766,7 @@ function renderBook() {
 
 function renderReader() {
   if (!state.chapters.length) {
+    closeFidelityView();
     virtualBook = createEmptyVirtualBook();
     dom.reader.innerHTML = `
       <section class="empty-state">
@@ -742,6 +780,15 @@ function renderReader() {
     return;
   }
 
+  // 原样模式：文本 DOM 不构建（容器是隐藏的，量不到尺寸），交给渲染引擎
+  if (isFidelityActive()) {
+    virtualBook = createEmptyVirtualBook();
+    dom.reader.replaceChildren();
+    openFidelityView();
+    return;
+  }
+
+  closeFidelityView();
   virtualBook = buildVirtualBook();
   dom.reader.replaceChildren(createVirtualReaderShell());
   restoreScroll(state.scrollTop || state.scrollByChapter[state.currentChapterIndex] || 0);
@@ -1667,6 +1714,16 @@ function restoreScroll(scrollTop) {
 }
 
 function updateProgress() {
+  if (isFidelityActive()) {
+    if (fidelity.type === "pdf" && fidelity.totalPdfPages) {
+      dom.readingPercent.textContent = `${fidelity.currentPdfPage}/${fidelity.totalPdfPages}页`;
+    } else if (fidelity.type === "epub" && fidelity.lastEpubPercent !== null) {
+      dom.readingPercent.textContent = `${(fidelity.lastEpubPercent * 100).toFixed(1)}%`;
+    } else {
+      dom.readingPercent.textContent = "…";
+    }
+    return;
+  }
   const totalProgress = state.chapters.length ? (getScrollProgress() * 100).toFixed(1) : "0";
   dom.readingPercent.textContent = `${totalProgress}%`;
 }
@@ -1706,9 +1763,23 @@ function updateButtons() {
   dom.restoreBookmark.disabled = !hasBook || !state.bookmark;
   dom.translateChapter.disabled = !hasBook;
   dom.clearTranslation.disabled = !hasBook || !getCurrentTranslation();
+  if (dom.layoutToggle) {
+    dom.layoutToggle.disabled = !hasBook;
+    dom.layoutToggle.classList.toggle("active", isFidelityActive());
+    dom.layoutToggle.textContent = isFidelityActive() ? "文本" : "版式";
+    dom.layoutToggle.title = isFidelityActive()
+      ? "切到文本模式（翻译/朗读/搜索可用）"
+      : "切到原样排版（保留原书版式与插图）";
+  }
 }
 
 function toggleImmersiveMode() {
+  // 原样模式的内容在 iframe/画布里，沉浸后轻点唤出顶栏收不到事件，
+  // 进去就出不来了——直接不让进
+  if (isFidelityActive() && !state.immersive) {
+    showToast("原样排版下暂不支持沉浸模式");
+    return;
+  }
   setImmersiveMode(!state.immersive);
 }
 
@@ -1781,6 +1852,7 @@ function handleTranslateToggleClick() {
     translateToggleLongPressTriggered = false;
     return;
   }
+  ensureTextModeFor("翻译");
   toggleParallelTranslation();
 }
 
@@ -2622,6 +2694,7 @@ function applySettings() {
 
   dom.shell.dataset.theme = theme;
   dom.shell.classList.toggle("has-book", hasBook);
+  dom.shell.classList.toggle("fidelity-mode", isFidelityActive());
   dom.shell.classList.toggle("immersive-mode", state.immersive);
   dom.shell.classList.toggle("immersive-peek", false);
   // 控制底部设置栏的折叠/展开
@@ -2654,6 +2727,9 @@ function applySettings() {
   Object.entries(dom.themeButtons).forEach(([buttonTheme, button]) => {
     button.classList.toggle("active", buttonTheme === theme);
   });
+
+  // 原样模式下主题/字号/行距要注入到 EPUB 渲染里（PDF 是固定版式，不适用）
+  if (fidelity.rendition) applyFidelityEpubTheme();
 
   updateButtons();
 }
@@ -3256,6 +3332,8 @@ function getCurrentBlockInfo() {
 
 // 列表面板：开关、互斥（打开时顺手关掉翻译面板，避免叠在一起）
 function toggleMarksPanel() {
+  // 标记/书签都锚定在文本块上，原样模式跳不过去，先切回文本
+  if (!marksPanelOpen) ensureTextModeFor("我的书签");
   if (marksPanelOpen) {
     closeMarksPanel();
   } else {
@@ -3316,6 +3394,34 @@ function renderTocList() {
     return;
   }
 
+  // 原样模式：用引擎自己的目录（EPUB nav / PDF outline），点击按 target 跳
+  if (isFidelityActive()) {
+    if (!fidelity.toc.length) {
+      const empty = document.createElement("p");
+      empty.className = "toc-empty";
+      empty.textContent = fidelity.type === "pdf"
+        ? "这本 PDF 没有自带大纲目录。"
+        : "目录加载中…";
+      list.append(empty);
+      return;
+    }
+    const fidelityFragment = document.createDocumentFragment();
+    fidelity.toc.forEach((entry, index) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "toc-item";
+      item.dataset.fidelityIndex = String(index);
+      item.setAttribute("role", "listitem");
+      const titleEl = document.createElement("span");
+      titleEl.className = "toc-item-title";
+      titleEl.textContent = entry.label;
+      item.append(titleEl);
+      fidelityFragment.append(item);
+    });
+    list.append(fidelityFragment);
+    return;
+  }
+
   const fragment = document.createDocumentFragment();
   state.chapters.forEach((chapter, index) => {
     const item = document.createElement("button");
@@ -3346,6 +3452,17 @@ function renderTocList() {
 function handleTocListClick(event) {
   const item = event.target.closest(".toc-item");
   if (!item) return;
+  // 原样模式的目录项：EPUB 按 href 跳、PDF 按页码跳
+  if (item.dataset.fidelityIndex !== undefined) {
+    const entry = fidelity.toc[Number(item.dataset.fidelityIndex)];
+    if (!entry) return;
+    if (fidelity.type === "epub" && fidelity.rendition) {
+      fidelity.rendition.display(entry.target);
+    } else if (fidelity.type === "pdf") {
+      scrollToPdfPage(entry.target);
+    }
+    return;
+  }
   const index = Number(item.dataset.index);
   if (!Number.isFinite(index)) return;
   scrollToChapter(index);
@@ -3369,6 +3486,8 @@ const SEARCH_SNIPPET_RADIUS = 36;
 let searchDebounceTimer = 0;
 
 function toggleSearchPanel() {
+  // 搜索结果跳转锚定在文本块上，原样模式先切回文本
+  if (!searchPanelOpen) ensureTextModeFor("搜索");
   if (searchPanelOpen) {
     closeSearchPanel();
   } else {
@@ -3571,6 +3690,8 @@ function toggleTts() {
     stopTts();
     return;
   }
+  // 朗读按文本块取句，原样模式先切回文本
+  ensureTextModeFor("朗读");
   
   let targetBlockIndex = -1;
   const [startIndex, endIndex] = virtualBook.renderedRange;
@@ -4235,6 +4356,8 @@ function clearBook() {
   stopTts();
   ttsState.lastBlockIndex = -1; // 清除续读缓存
   closeMarkContextMenu();
+  closeFidelityView();
+  deleteRawBookFiles();
   state = {
     ...defaultState,
     // 清空时把书库重新展开，方便用户立即导入下一本
@@ -4285,6 +4408,7 @@ function loadState() {
       translator,
       scrollTop: Number(saved?.scrollTop) || 0,
       immersive: Boolean(saved?.immersive),
+      viewMode: saved?.viewMode === "fidelity" ? "fidelity" : "text",
       scrollByChapter: saved?.scrollByChapter || {},
       chapters: Array.isArray(saved?.chapters) ? saved.chapters : [],
       translations: saved?.translations && typeof saved.translations === "object" ? saved.translations : {},
@@ -4386,6 +4510,472 @@ function restoreFromProgress(progress) {
   }
   restoreScroll(Number(progress.scrollTop) || 0);
 }
+
+// ============ 原样排版模式（fidelity）：EPUB 原版式 / PDF 按页 ============
+// 文本模式负责翻译/朗读/搜索等功能；原样模式负责显示效果。
+// 原始文件字节存 IndexedDB（readTaylorFiles），按 bookId 取用。
+
+let filesDbPromise = null;
+// 运行期句柄：当前打开的渲染引擎实例，关书/切模式时统一销毁
+const fidelity = {
+  type: null, // "epub" | "pdf"
+  epubBook: null,
+  rendition: null,
+  pdfDoc: null,
+  pdfObserver: null,
+  pdfPageRatio: 1.4, // 高/宽比，先用首页估算，渲染到真实页后校正
+  currentPdfPage: 1,
+  totalPdfPages: 0,
+  lastEpubPercent: null,
+  lastEpubCfi: "",
+  toc: [], // [{ label, target }] target: epub href / pdf 页码
+  resizeTimer: 0,
+  opening: false,
+};
+
+function openFilesDb() {
+  if (filesDbPromise) return filesDbPromise;
+  filesDbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(FILES_DB_NAME, FILES_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(FILES_STORE)) {
+        db.createObjectStore(FILES_STORE, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return filesDbPromise;
+}
+
+// 应用一次只保留一本书，存之前清掉旧文件，避免换书越攒越大
+async function saveRawBookFile(id, file, format) {
+  const db = await openFilesDb();
+  const bytes = await file.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FILES_STORE, "readwrite");
+    const store = tx.objectStore(FILES_STORE);
+    store.clear();
+    store.put({ id, format, name: file.name, bytes, savedAt: Date.now() });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function readRawBookFile(id) {
+  try {
+    const db = await openFilesDb();
+    return await new Promise((resolve, reject) => {
+      const request = db.transaction(FILES_STORE, "readonly").objectStore(FILES_STORE).get(id);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function deleteRawBookFiles() {
+  try {
+    const db = await openFilesDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(FILES_STORE, "readwrite");
+      tx.objectStore(FILES_STORE).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // 清不掉就留着，下次导入时 saveRawBookFile 也会 clear
+  }
+}
+
+function isFidelityCapable() {
+  return Boolean(state.book) && ["epub", "pdf"].includes(state.book.format);
+}
+
+function isFidelityActive() {
+  return isFidelityCapable() && state.viewMode === "fidelity";
+}
+
+function setViewMode(mode) {
+  if (state.viewMode === mode) return;
+  state.viewMode = mode;
+  saveState();
+  renderAll();
+}
+
+function toggleLayoutMode() {
+  if (!state.book) return;
+  if (!isFidelityCapable()) {
+    showToast("TXT 没有原版排版，已是最佳显示");
+    return;
+  }
+  if (isFidelityActive()) {
+    setViewMode("text");
+    showToast("已切到文本模式（翻译/朗读可用）");
+  } else {
+    setViewMode("fidelity");
+  }
+}
+
+// 原样模式下用不了的功能：点了就自动切回文本模式再继续
+function ensureTextModeFor(featureName) {
+  if (!isFidelityActive()) return false;
+  state.viewMode = "text";
+  saveState();
+  renderAll();
+  showToast(`已切到文本模式使用「${featureName}」，按「版式」可切回`);
+  return true;
+}
+
+function closeFidelityView() {
+  if (fidelity.rendition) {
+    try { fidelity.rendition.destroy(); } catch { /* 已销毁 */ }
+  }
+  if (fidelity.epubBook) {
+    try { fidelity.epubBook.destroy(); } catch { /* 已销毁 */ }
+  }
+  if (fidelity.pdfDoc) {
+    try { fidelity.pdfDoc.destroy(); } catch { /* 已销毁 */ }
+  }
+  if (fidelity.pdfObserver) {
+    fidelity.pdfObserver.disconnect();
+  }
+  fidelity.type = null;
+  fidelity.epubBook = null;
+  fidelity.rendition = null;
+  fidelity.pdfDoc = null;
+  fidelity.pdfObserver = null;
+  fidelity.toc = [];
+  fidelity.lastEpubPercent = null;
+  fidelity.lastEpubCfi = "";
+  dom.fidelityNav.hidden = true;
+  dom.fidelityReader.replaceChildren();
+}
+
+// 入口：按格式分流。原始文件缺失（老导入的书）时回落文本模式并提示
+async function openFidelityView() {
+  if (fidelity.opening) return;
+  fidelity.opening = true;
+  try {
+    closeFidelityView();
+    const record = await readRawBookFile(state.book.id);
+    if (!record?.bytes) {
+      state.viewMode = "text";
+      saveState();
+      renderAll();
+      showToast("原样排版需要重新导入一次本书");
+      return;
+    }
+    if (state.book.format === "epub") {
+      await openFidelityEpub(record.bytes);
+    } else {
+      await openFidelityPdf(record.bytes);
+    }
+    if (tocPanelOpen) renderTocList();
+  } catch (error) {
+    console.warn("原样排版打开失败：", error);
+    state.viewMode = "text";
+    saveState();
+    renderAll();
+    showToast("原样排版打开失败，已切回文本模式");
+  } finally {
+    fidelity.opening = false;
+  }
+}
+
+// ---- EPUB：epub.js rendition，连续滚动 + 主题注入 + CFI 进度 ----
+
+async function openFidelityEpub(bytes) {
+  await loadScript(JSZIP_URL, "JSZip");
+  await loadScript(EPUB_JS_URL, "ePub");
+
+  fidelity.type = "epub";
+  fidelity.epubBook = window.ePub(bytes);
+  await fidelity.epubBook.ready;
+
+  // scrolled-doc = 一章一屏内滚动；continuous 管理器在 epub.js 0.3.93
+  // 上 display() 会挂死（实测），跨章交给上一章/下一章按钮
+  fidelity.rendition = fidelity.epubBook.renderTo(dom.fidelityReader, {
+    flow: "scrolled-doc",
+    width: "100%",
+    height: "100%",
+    // 原书脚本不执行，只要版式和图片
+    allowScriptedContent: false,
+  });
+  dom.fidelityNav.hidden = false;
+
+  applyFidelityEpubTheme();
+
+  // 进度：用 spine 序号 + 节内位置估算百分比（不生成 locations，开书快）
+  fidelity.rendition.on("relocated", (location) => {
+    const spineCount = fidelity.epubBook.spine?.length
+      || fidelity.epubBook.spine?.spineItems?.length
+      || 0;
+    const index = location?.start?.index ?? 0;
+    let fraction = 0;
+    const displayed = location?.start?.displayed;
+    if (displayed?.total > 0) {
+      fraction = (displayed.page - 1) / displayed.total;
+    }
+    fidelity.lastEpubPercent = spineCount > 0
+      ? Math.min(1, (index + fraction) / spineCount)
+      : null;
+    fidelity.lastEpubCfi = location?.start?.cfi || "";
+    updateProgress();
+    persistFidelityPosition();
+  });
+
+  // 目录：epub 自带 nav
+  try {
+    const nav = await fidelity.epubBook.loaded.navigation;
+    fidelity.toc = flattenEpubToc(nav?.toc || []);
+  } catch {
+    fidelity.toc = [];
+  }
+
+  const saved = readProgress(state.book.id);
+  // display 在容器不可见/零高度时会永远不 resolve，加超时兜底，
+  // 超时走 openFidelityView 的 catch 回落文本模式
+  await Promise.race([
+    fidelity.rendition.display(saved?.epubCfi || undefined),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("EPUB 渲染超时")), 20000)),
+  ]);
+  if (saved?.epubCfi) showToast("已恢复阅读位置");
+}
+
+function flattenEpubToc(items, depth = 0, out = []) {
+  for (const item of items || []) {
+    out.push({ label: `${"　".repeat(depth)}${(item.label || "").trim() || "未命名"}`, target: item.href });
+    if (item.subitems?.length) flattenEpubToc(item.subitems, depth + 1, out);
+  }
+  return out;
+}
+
+// 把当前主题/字号/行距注入原书：original CSS 保留，只覆盖底色文字色
+function applyFidelityEpubTheme() {
+  if (!fidelity.rendition) return;
+  const shellStyle = getComputedStyle(dom.shell);
+  const bg = shellStyle.getPropertyValue("--reader-bg").trim();
+  const ink = shellStyle.getPropertyValue("--reader-ink").trim();
+  const { fontSize, lineHeight } = state.settings;
+  fidelity.rendition.themes.default({
+    body: {
+      background: `${bg} !important`,
+      color: `${ink} !important`,
+      "line-height": `${lineHeight} !important`,
+    },
+    // 夜间模式下原书黑字会看不见，链接颜色也统一掉
+    "p, li, div, span, h1, h2, h3, h4, h5, h6, blockquote": {
+      color: `${ink} !important`,
+    },
+    img: { "max-width": "100% !important", height: "auto !important" },
+  });
+  fidelity.rendition.themes.fontSize(`${fontSize}px`);
+}
+
+// ---- PDF：按页 canvas 渲染，IntersectionObserver 懒加载 ----
+
+async function openFidelityPdf(bytes) {
+  await loadScript(PDF_JS_URL, "pdfjsLib");
+  const pdfjs = window.pdfjsLib;
+  pdfjs.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+
+  fidelity.type = "pdf";
+  // bytes 是 IndexedDB 取出的 ArrayBuffer，传副本避免被 pdf.js detach
+  fidelity.pdfDoc = await pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)), useSystemFonts: true }).promise;
+  fidelity.totalPdfPages = fidelity.pdfDoc.numPages;
+
+  // 用第一页的宽高比估算所有页的占位高度，渲染到真实页时再校正
+  const firstPage = await fidelity.pdfDoc.getPage(1);
+  const viewport = firstPage.getViewport({ scale: 1 });
+  fidelity.pdfPageRatio = viewport.height / viewport.width;
+
+  const container = dom.fidelityReader;
+  container.replaceChildren();
+  const pageWidth = Math.max(100, container.clientWidth - 16);
+  const fragment = document.createDocumentFragment();
+  for (let n = 1; n <= fidelity.totalPdfPages; n += 1) {
+    const holder = document.createElement("div");
+    holder.className = "pdf-page";
+    holder.dataset.page = String(n);
+    holder.style.width = `${pageWidth}px`;
+    holder.style.height = `${Math.round(pageWidth * fidelity.pdfPageRatio)}px`;
+    fragment.append(holder);
+  }
+  container.append(fragment);
+
+  // 视口前后 2 屏内渲染，离开 4 屏外释放画布省内存
+  fidelity.pdfObserver = new IntersectionObserver(handlePdfPageIntersect, {
+    root: container,
+    rootMargin: "200% 0%",
+  });
+  container.querySelectorAll(".pdf-page").forEach((el) => fidelity.pdfObserver.observe(el));
+
+  // 目录：PDF 大纲（outline），异步解析每项指向的页码
+  fidelity.toc = [];
+  try {
+    const outline = await fidelity.pdfDoc.getOutline();
+    if (outline?.length) {
+      fidelity.toc = await flattenPdfOutline(outline);
+      if (tocPanelOpen) renderTocList();
+    }
+  } catch {
+    // 没大纲就算了，目录面板会显示提示
+  }
+
+  const saved = readProgress(state.book.id);
+  const targetPage = clamp(Number(saved?.pdfPage) || 1, 1, fidelity.totalPdfPages);
+  if (targetPage > 1) {
+    scrollToPdfPage(targetPage);
+    showToast("已恢复阅读位置");
+  }
+  fidelity.currentPdfPage = targetPage;
+  updateProgress();
+}
+
+async function flattenPdfOutline(items, depth = 0, out = []) {
+  for (const item of items || []) {
+    let pageNumber = null;
+    try {
+      let dest = item.dest;
+      if (typeof dest === "string") dest = await fidelity.pdfDoc.getDestination(dest);
+      if (Array.isArray(dest) && dest[0]) {
+        pageNumber = (await fidelity.pdfDoc.getPageIndex(dest[0])) + 1;
+      }
+    } catch {
+      pageNumber = null;
+    }
+    if (pageNumber) {
+      out.push({ label: `${"　".repeat(depth)}${(item.title || "").trim() || "未命名"}`, target: pageNumber });
+    }
+    if (item.items?.length) await flattenPdfOutline(item.items, depth + 1, out);
+  }
+  return out;
+}
+
+function handlePdfPageIntersect(entries) {
+  for (const entry of entries) {
+    const holder = entry.target;
+    if (entry.isIntersecting) {
+      renderPdfPageInto(holder);
+    } else if (holder.dataset.rendered === "1") {
+      // 离开预载区就释放画布（占位高度保留，不影响滚动位置）
+      holder.replaceChildren();
+      holder.dataset.rendered = "0";
+    }
+  }
+}
+
+async function renderPdfPageInto(holder) {
+  if (!fidelity.pdfDoc || holder.dataset.rendered === "1" || holder.dataset.rendering === "1") return;
+  holder.dataset.rendering = "1";
+  try {
+    const pageNumber = Number(holder.dataset.page);
+    const page = await fidelity.pdfDoc.getPage(pageNumber);
+    const cssWidth = holder.clientWidth;
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = cssWidth / baseViewport.width;
+    // 控制像素密度上限，避免高分屏渲染超大画布拖慢手机
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const viewport = page.getViewport({ scale: scale * dpr });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+
+    // 校正占位高度为该页真实比例
+    const realCssHeight = Math.round(cssWidth * (baseViewport.height / baseViewport.width));
+    if (Math.abs(realCssHeight - holder.clientHeight) > 2) {
+      holder.style.height = `${realCssHeight}px`;
+    }
+
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    holder.replaceChildren(canvas);
+    holder.dataset.rendered = "1";
+  } catch (error) {
+    console.warn("PDF 页渲染失败：", error);
+  } finally {
+    holder.dataset.rendering = "0";
+  }
+}
+
+// 原样容器滚动：先做顶栏自动隐藏（移动端），PDF 再跟踪当前页码
+let lastFidelityScrollTop = 0;
+function handleFidelityScroll() {
+  const y = dom.fidelityReader.scrollTop;
+  const delta = y - lastFidelityScrollTop;
+  if (Math.abs(delta) >= 6) {
+    if (!actionsMenuOpen) {
+      if (delta > 0 && y > 80) {
+        dom.shell.classList.add("toolbar-hidden");
+      } else if (delta < 0) {
+        dom.shell.classList.remove("toolbar-hidden");
+      }
+    }
+    lastFidelityScrollTop = y;
+  }
+  if (fidelity.type === "pdf") handleFidelityPdfScroll();
+}
+
+// 滚动时找视口中线所在页，更新页码进度并持久化
+let fidelityPdfScrollTimer = 0;
+function handleFidelityPdfScroll() {
+  if (fidelity.type !== "pdf") return;
+  const container = dom.fidelityReader;
+  const middle = container.scrollTop + container.clientHeight / 2;
+  let current = 1;
+  for (const holder of container.querySelectorAll(".pdf-page")) {
+    if (holder.offsetTop <= middle) {
+      current = Number(holder.dataset.page);
+    } else {
+      break;
+    }
+  }
+  if (current !== fidelity.currentPdfPage) {
+    fidelity.currentPdfPage = current;
+    updateProgress();
+  }
+  window.clearTimeout(fidelityPdfScrollTimer);
+  fidelityPdfScrollTimer = window.setTimeout(persistFidelityPosition, 300);
+}
+
+function scrollToPdfPage(pageNumber) {
+  const holder = dom.fidelityReader.querySelector(`.pdf-page[data-page="${pageNumber}"]`);
+  if (holder) {
+    dom.fidelityReader.scrollTop = holder.offsetTop - 8;
+    fidelity.currentPdfPage = pageNumber;
+    updateProgress();
+    // 跳页立即落盘，不等滚动事件（目录跳转后马上关页面也不丢位置）
+    persistFidelityPosition();
+  }
+}
+
+// 阅读位置随读随存（progress 记录按 bookId 持久化，模式间互不覆盖关键字段）
+function persistFidelityPosition() {
+  if (!state.book?.id || !fidelity.type) return;
+  const existing = readProgress(state.book.id) || {};
+  if (fidelity.type === "epub") {
+    writeProgress(state.book.id, { ...existing, epubCfi: fidelity.lastEpubCfi, updatedAt: Date.now() });
+  } else {
+    writeProgress(state.book.id, { ...existing, pdfPage: fidelity.currentPdfPage, updatedAt: Date.now() });
+  }
+}
+
+// 窗口尺寸变化（转屏）时 PDF 重排版式
+window.addEventListener("resize", () => {
+  if (fidelity.type !== "pdf") return;
+  window.clearTimeout(fidelity.resizeTimer);
+  fidelity.resizeTimer = window.setTimeout(() => {
+    if (fidelity.type === "pdf" && isFidelityActive()) {
+      const page = fidelity.currentPdfPage;
+      openFidelityView().then(() => scrollToPdfPage(page));
+    }
+  }, 400);
+});
 
 // 轻量 toast，自动 2s 淡出，主要给"已恢复阅读位置"这类一过性提示用
 let toastHideTimer = 0;
