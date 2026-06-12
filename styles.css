@@ -2022,6 +2022,25 @@ button:active,
     z-index: 32;
   }
 
+  /* 沉浸模式轻点唤出的 peek：沿用移动端细条布局，覆盖桌面 peek 的
+     fixed + translateX(-50%)——那个 transform 会把底部菜单的 fixed
+     劫持成相对顶栏定位（同 backdrop-filter 的老坑） */
+  .app-shell.immersive-mode.immersive-peek .reader-toolbar {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+    transform: none;
+    padding: 6px 8px 6px 12px;
+  }
+
+  /* 桌面 peek 规则带 z-index:8 且特异性更高，会压过上面 actions-open
+     的 z-index:32，菜单又会被遮罩盖住——补一条同级组合规则抬回来 */
+  .app-shell.immersive-mode.immersive-peek.actions-open .reader-toolbar {
+    z-index: 32;
+  }
+
   /* 顶栏悬浮后，正文留出顶部空间避免首行被压住 */
   .reader {
     padding-top: 60px;

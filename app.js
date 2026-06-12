@@ -2708,6 +2708,12 @@ function updateToolbarVisibilityOnScroll() {
     lastToolbarScrollTop = y;
     return;
   }
+  // 沉浸模式：顶栏显隐由 peek 管，下滑时把轻点唤出的 peek 收掉即可
+  if (state.immersive) {
+    if (delta > 0) dom.shell.classList.remove("immersive-peek");
+    lastToolbarScrollTop = y;
+    return;
+  }
   if (delta > 0 && y > 80) {
     dom.shell.classList.add("toolbar-hidden");
   } else if (delta < 0) {
@@ -2716,12 +2722,25 @@ function updateToolbarVisibilityOnScroll() {
   lastToolbarScrollTop = y;
 }
 
-// 顶栏滚动隐藏后，轻点正文（没有在拖选文本时）把它唤回来
+// 触屏设备（手机/平板）：没有鼠标悬停也没有 Esc，沉浸模式的进出要走轻点
+function isTouchLikeDevice() {
+  return window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+}
+
+// 轻点正文（没有在拖选文本时）：
+// - 沉浸模式 + 触屏：开关顶栏 peek，从 peek 的菜单里可退出沉浸（桌面仍用鼠标移顶/Esc）
+// - 普通模式：唤回被滚动隐藏的顶栏
 function revealToolbarOnTap() {
-  if (!dom.shell.classList.contains("toolbar-hidden")) return;
   const selection = window.getSelection?.();
   if (selection && String(selection).length > 0) return;
-  dom.shell.classList.remove("toolbar-hidden");
+  if (state.immersive) {
+    if (!isTouchLikeDevice()) return;
+    dom.shell.classList.toggle("immersive-peek");
+    return;
+  }
+  if (dom.shell.classList.contains("toolbar-hidden")) {
+    dom.shell.classList.remove("toolbar-hidden");
+  }
 }
 
 // ============ 双栏翻译模式：点击/选中 → 高亮对侧句子 ============
@@ -4202,6 +4221,8 @@ function handleShortcuts(event) {
 
 function handleImmersivePointer(event) {
   if (!state.immersive) return;
+  // 触屏的轻点会补发合成 mousemove，会跟“轻点开关 peek”打架，触屏一律交给轻点处理
+  if (isTouchLikeDevice()) return;
   dom.shell.classList.toggle("immersive-peek", event.clientY < 72);
 }
 
