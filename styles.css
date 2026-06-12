@@ -2006,8 +2006,11 @@ button:active,
     transition: opacity 0.2s ease, visibility 0.2s ease;
   }
 
-  /* 下滑阅读时顶栏淡出（不用 transform，避免劫持 fixed），上滑 / 轻点正文 / 开菜单时回来 */
-  .app-shell.toolbar-hidden .reader-toolbar {
+  /* 下滑阅读时顶栏淡出（不用 transform，避免劫持 fixed），上滑 / 轻点正文 / 开菜单时回来。
+     书库栏展开（或还没导入书、书库常驻）时顶栏压在书库标题上，也一并淡出 */
+  .app-shell.toolbar-hidden .reader-toolbar,
+  .app-shell.sidebar-open .reader-toolbar,
+  .app-shell:not(.has-book) .reader-toolbar {
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
