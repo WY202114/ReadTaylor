@@ -67,9 +67,11 @@
       </aside>
 
       <main class="reader-shell">
+        <!-- 书库拉手是 fixed 悬浮元素，放在顶栏外面：
+             顶栏淡出（滚动隐藏/书库展开）时它必须留着，否则书库收不回去 -->
+        <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="展开书库" aria-expanded="true" aria-controls="library-panel"></button>
         <header class="reader-toolbar" aria-label="阅读工具栏">
           <div class="reader-status">
-            <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="展开书库" aria-expanded="true" aria-controls="library-panel"></button>
             <strong id="reading-percent">0%</strong>
             <!-- 移动端：把下面 7 个功能收进底部弹出菜单，桌面端此按钮隐藏 -->
             <button id="actions-menu-toggle" class="actions-menu-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="toolbar-actions" title="功能菜单">菜单</button>
