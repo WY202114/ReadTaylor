@@ -1854,10 +1854,71 @@ button:active,
   .sidebar-toggle {
     top: 50%;
     left: min(86vw, 330px);
+    width: 34px;
+    height: 56px;
+    border-right: 0;
+    border-radius: 18px 0 0 18px;
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--panel) 88%, transparent), color-mix(in srgb, var(--panel) 98%, transparent)),
+      var(--panel);
+    color: color-mix(in srgb, var(--accent-strong) 82%, var(--reader-ink));
+    box-shadow:
+      0 12px 26px rgba(42, 45, 40, 0.12),
+      inset 1px 0 0 rgba(255, 255, 255, 0.58);
+    transform: translate(-100%, -50%);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    -webkit-tap-highlight-color: transparent;
   }
 
   .app-shell.sidebar-collapsed .sidebar-toggle {
+    left: 0;
+    border-right: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+    border-left: 0;
+    border-radius: 0 18px 18px 0;
+    transform: translateY(-50%);
+    opacity: 0.9;
+  }
+
+  .sidebar-toggle:hover,
+  .sidebar-toggle.active {
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--accent-soft) 82%, transparent), color-mix(in srgb, var(--panel) 96%, transparent)),
+      var(--panel);
+    color: var(--accent-strong);
+  }
+
+  .sidebar-toggle:hover {
+    transform: translate(-100%, -50%) translateX(-1px);
+  }
+
+  .app-shell.sidebar-collapsed .sidebar-toggle:hover {
+    transform: translateY(-50%) translateX(1px);
+  }
+
+  .sidebar-toggle::before,
+  .sidebar-toggle::after {
     left: 12px;
+    top: 50%;
+    width: 11px;
+    height: 2px;
+    transform-origin: right center;
+  }
+
+  .app-shell.sidebar-collapsed .sidebar-toggle::before {
+    transform: translateY(-1px) rotate(38deg);
+  }
+
+  .app-shell.sidebar-collapsed .sidebar-toggle::after {
+    transform: translateY(1px) rotate(-38deg);
+  }
+
+  .app-shell.sidebar-open .sidebar-toggle::before {
+    transform: translateY(-1px) rotate(-38deg);
+  }
+
+  .app-shell.sidebar-open .sidebar-toggle::after {
+    transform: translateY(1px) rotate(38deg);
   }
 
   .app-shell.sidebar-open .library-panel,
