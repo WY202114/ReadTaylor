@@ -3692,7 +3692,7 @@ function togglePauseTts() {
   if (ttsState.paused) {
     speechSynthesis.resume();
     ttsState.paused = false;
-    dom.ttsPlay.textContent = "⏸";
+    dom.ttsPlay.textContent = "II";
     dom.ttsPlay.title = "暂停";
   } else {
     speechSynthesis.pause();
@@ -3708,7 +3708,7 @@ function jumpTtsBlock(step) {
   if (next === ttsState.blockIndex) return;
   ttsState.blockIndex = next;
   ttsState.paused = false;
-  dom.ttsPlay.textContent = "⏸";
+  dom.ttsPlay.textContent = "II";
   speakCurrentTtsBlock();
 }
 
@@ -4002,7 +4002,7 @@ function showTtsBar() {
 
 function hideTtsBar() {
   dom.ttsBar.hidden = true;
-  dom.ttsPlay.textContent = "⏸";
+  dom.ttsPlay.textContent = "II";
   dom.ttsPlay.title = "暂停 / 继续";
 }
 

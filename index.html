@@ -14,7 +14,8 @@
     <meta name="apple-mobile-web-app-title" content="ReadTaylor" />
     <link rel="apple-touch-icon" href="icon.svg" />
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css" />
+    <!-- ?v= 版本号：每次发版改一下，强制手机浏览器/中间CDN放弃旧缓存 -->
+    <link rel="stylesheet" href="styles.css?v=2026061201" />
   </head>
   <body>
     <a class="skip-link" href="#reader">跳到正文</a>
@@ -234,9 +235,9 @@
         </section>
 
         <div id="tts-bar" class="tts-bar" role="toolbar" aria-label="朗读控制" hidden>
-          <button id="tts-prev" class="tts-bar-button" type="button" title="上一段" aria-label="上一段">⏮</button>
-          <button id="tts-play" class="tts-bar-button tts-bar-play" type="button" title="暂停 / 继续" aria-label="暂停或继续">⏸</button>
-          <button id="tts-next" class="tts-bar-button" type="button" title="下一段" aria-label="下一段">⏭</button>
+          <button id="tts-prev" class="tts-bar-button" type="button" title="上一段" aria-label="上一段">‹</button>
+          <button id="tts-play" class="tts-bar-button tts-bar-play" type="button" title="暂停 / 继续" aria-label="暂停或继续">II</button>
+          <button id="tts-next" class="tts-bar-button" type="button" title="下一段" aria-label="下一段">›</button>
           <label class="tts-bar-field">
             <span>语速</span>
             <input id="tts-rate" type="range" min="0.6" max="1.8" step="0.1" value="1" />
@@ -246,7 +247,7 @@
             <span>音色</span>
             <select id="tts-voice" aria-label="选择音色"></select>
           </label>
-          <button id="tts-stop" class="tts-bar-button tts-bar-stop" type="button" title="停止" aria-label="停止朗读">✕</button>
+          <button id="tts-stop" class="tts-bar-button tts-bar-stop" type="button" title="停止" aria-label="停止朗读">×</button>
         </div>
 
         <footer id="reading-controls" class="reading-controls" aria-label="阅读设置">
@@ -268,6 +269,6 @@
       </main>
     </div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=2026061201"></script>
   </body>
 </html>
