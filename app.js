@@ -76,6 +76,9 @@ const dom = {
   ttsVoice: document.querySelector("#tts-voice"),
   settingsToggle: document.querySelector("#settings-toggle"),
   sidebarToggle: document.querySelector("#sidebar-toggle"),
+  actionsMenuToggle: document.querySelector("#actions-menu-toggle"),
+  actionsBackdrop: document.querySelector("#actions-backdrop"),
+  toolbarActions: document.querySelector("#toolbar-actions"),
   fontSize: document.querySelector("#font-size"),
   lineHeight: document.querySelector("#line-height"),
   themeButtons: {
@@ -127,6 +130,9 @@ const defaultState = {
 let state = loadState();
 let saveTimer = 0;
 let scrollRestoreTimer = 0;
+// 移动端：底部功能菜单是否展开 + 顶栏滚动隐藏用的上次滚动位置
+let actionsMenuOpen = false;
+let lastToolbarScrollTop = 0;
 let virtualBook = createEmptyVirtualBook();
 let virtualRenderFrame = 0;
 let translationDbPromise = null;
@@ -209,6 +215,16 @@ function bindEvents() {
   dom.restoreBookmark.addEventListener("click", restoreBookmark);
   dom.settingsToggle.addEventListener("click", toggleReadingControls);
   if (dom.sidebarToggle) dom.sidebarToggle.addEventListener("click", toggleSidebar);
+  // 移动端底部功能菜单：菜单按钮开关、点遮罩关、点任一功能后自动收起
+  if (dom.actionsMenuToggle) dom.actionsMenuToggle.addEventListener("click", toggleActionsMenu);
+  if (dom.actionsBackdrop) dom.actionsBackdrop.addEventListener("click", closeActionsMenu);
+  if (dom.toolbarActions) {
+    dom.toolbarActions.addEventListener("click", (event) => {
+      if (event.target.closest(".tool-button")) closeActionsMenu();
+    });
+  }
+  // 顶栏滚动隐藏后，轻点正文（非拖选）把它唤回来
+  dom.reader.addEventListener("click", revealToolbarOnTap);
   // "翻译" 按钮：左键 = 一键开关；右键 / 长按 = 打开翻译设置面板
   dom.translateToggle.addEventListener("click", handleTranslateToggleClick);
   dom.translateToggle.addEventListener("contextmenu", handleTranslateToggleContextMenu);
@@ -1622,6 +1638,7 @@ function moveChapter(direction) {
 function handleReaderScroll() {
   closeLookupPopup();
   closeMarkContextMenu();
+  updateToolbarVisibilityOnScroll();
   window.clearTimeout(saveTimer);
   scheduleVirtualRender();
   updateCurrentChapterFromScroll();
@@ -2654,6 +2671,57 @@ function toggleSidebar() {
   state.settings.sidebarOpen = !state.settings.sidebarOpen;
   applySettings();
   saveState();
+}
+
+// ============ 移动端底部功能菜单 + 顶栏滚动自动隐藏 ============
+// 纯 UI 态，不持久化；桌面端这些 class 没有对应样式，等于无操作。
+
+function toggleActionsMenu() {
+  if (actionsMenuOpen) {
+    closeActionsMenu();
+  } else {
+    openActionsMenu();
+  }
+}
+
+function openActionsMenu() {
+  actionsMenuOpen = true;
+  dom.shell.classList.add("actions-open");
+  // 菜单藏在顶栏里，打开时先把可能滚动隐藏的顶栏唤回来
+  dom.shell.classList.remove("toolbar-hidden");
+  dom.actionsMenuToggle?.setAttribute("aria-expanded", "true");
+}
+
+function closeActionsMenu() {
+  if (!actionsMenuOpen) return;
+  actionsMenuOpen = false;
+  dom.shell.classList.remove("actions-open");
+  dom.actionsMenuToggle?.setAttribute("aria-expanded", "false");
+}
+
+// 下滑阅读时隐藏顶栏，上滑时显示；抖动忽略，菜单打开时不动顶栏
+function updateToolbarVisibilityOnScroll() {
+  const y = dom.reader.scrollTop;
+  const delta = y - lastToolbarScrollTop;
+  if (Math.abs(delta) < 6) return;
+  if (actionsMenuOpen) {
+    lastToolbarScrollTop = y;
+    return;
+  }
+  if (delta > 0 && y > 80) {
+    dom.shell.classList.add("toolbar-hidden");
+  } else if (delta < 0) {
+    dom.shell.classList.remove("toolbar-hidden");
+  }
+  lastToolbarScrollTop = y;
+}
+
+// 顶栏滚动隐藏后，轻点正文（没有在拖选文本时）把它唤回来
+function revealToolbarOnTap() {
+  if (!dom.shell.classList.contains("toolbar-hidden")) return;
+  const selection = window.getSelection?.();
+  if (selection && String(selection).length > 0) return;
+  dom.shell.classList.remove("toolbar-hidden");
 }
 
 // ============ 双栏翻译模式：点击/选中 → 高亮对侧句子 ============

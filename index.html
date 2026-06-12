@@ -2,10 +2,18 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>ReadTaylor</title>
     <meta name="description" content="ReadTaylor 是一个支持 TXT、EPUB、PDF 的本地小说阅读器。" />
     <meta name="theme-color" content="#edf0ea" />
+    <!-- PWA：添加到主屏后以独立窗口打开，手机浏览器地址栏几乎消失 -->
+    <link rel="manifest" href="manifest.json" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="ReadTaylor" />
+    <link rel="apple-touch-icon" href="icon.svg" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -63,8 +71,10 @@
           <div class="reader-status">
             <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="展开书库" aria-expanded="true" aria-controls="library-panel"></button>
             <strong id="reading-percent">0%</strong>
+            <!-- 移动端：把下面 7 个功能收进底部弹出菜单，桌面端此按钮隐藏 -->
+            <button id="actions-menu-toggle" class="actions-menu-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="toolbar-actions" title="功能菜单">菜单</button>
           </div>
-          <div class="toolbar-actions">
+          <div id="toolbar-actions" class="toolbar-actions">
             <button id="immersive-toggle" class="tool-button" type="button">沉浸</button>
             <!-- 翻译按钮：左键开关；右键或长按打开设置面板 -->
             <button id="translate-toggle" class="tool-button" type="button" title="点击开启/关闭翻译；右键或长按打开翻译设置">翻译</button>
@@ -80,6 +90,8 @@
             <button id="settings-toggle" class="tool-button" type="button" aria-expanded="false" aria-controls="reading-controls">设置</button>
           </div>
         </header>
+        <!-- 移动端底部菜单打开时的半透明遮罩，点它即关闭 -->
+        <div id="actions-backdrop" class="actions-backdrop" aria-hidden="true"></div>
 
         <article id="reader" class="reader" tabindex="0" aria-label="小说正文">
           <section class="empty-state">

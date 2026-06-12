@@ -626,6 +626,15 @@ button:active,
   justify-content: flex-end;
 }
 
+/* 移动端才出现的“菜单”按钮与底部菜单遮罩：桌面端默认隐藏 */
+.actions-menu-toggle {
+  display: none;
+}
+
+.actions-backdrop {
+  display: none;
+}
+
 .icon-button,
 .tool-button,
 .segmented {
@@ -1917,23 +1926,113 @@ button:active,
 }
 
 @media (max-width: 620px) {
+  /* 顶栏收成一条悬浮细条：只留 进度 + 菜单按钮，浮在正文上方不再占整块版面 */
   .reader-toolbar {
-    flex-wrap: wrap;
-    padding: 8px;
+    position: absolute;
+    z-index: 6;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+    margin: 0;
+    flex-wrap: nowrap;
+    padding: 6px 8px 6px 12px;
+    transition: transform 0.26s ease, opacity 0.2s ease;
   }
 
-  .toolbar-actions {
-    width: 100%;
+  /* 下滑阅读时顶栏滑出屏幕，上滑 / 轻点正文 / 开菜单时回来（见 app.js） */
+  .app-shell.toolbar-hidden .reader-toolbar {
+    transform: translateY(-150%);
+    opacity: 0;
+    pointer-events: none;
   }
 
-  .toolbar-actions .tool-button {
-    flex: 1 1 calc(33.333% - 8px);
-    min-width: 76px;
-    min-height: 36px;
+  /* 顶栏悬浮后，正文留出顶部空间避免首行被压住 */
+  .reader {
+    padding-top: 60px;
   }
 
   .reader-status {
-    min-width: calc(100% - 56px);
+    width: 100%;
+    min-width: 0;
+  }
+
+  .actions-menu-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    min-height: 34px;
+    padding: 0 16px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--panel) 88%, transparent);
+    color: var(--reader-ink);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .actions-menu-toggle:active {
+    background: var(--accent-soft);
+  }
+
+  .app-shell.actions-open .actions-menu-toggle {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  /* 7 个功能按钮收进底部弹出菜单 */
+  .toolbar-actions {
+    position: fixed;
+    z-index: 30;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    border-radius: 18px 18px 0 0;
+    box-shadow: 0 -18px 44px rgba(40, 45, 40, 0.2);
+    transform: translateY(110%);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.28s ease, opacity 0.2s ease;
+  }
+
+  .app-shell.actions-open .toolbar-actions {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .toolbar-actions .tool-button {
+    flex: none;
+    width: 100%;
+    min-height: 46px;
+    font-size: 14px;
+  }
+
+  /* 底部菜单背后的遮罩，点击关闭 */
+  .actions-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 29;
+    background: rgba(28, 30, 26, 0.34);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .app-shell.actions-open .actions-backdrop {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .reading-controls {

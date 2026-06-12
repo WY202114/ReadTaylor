@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ReadTaylor">
+  <rect width="512" height="512" rx="112" fill="#edf0ea"/>
+  <rect x="120" y="96" width="272" height="320" rx="24" fill="#fbfcf9" stroke="#c9d2c2" stroke-width="10"/>
+  <line x1="256" y1="120" x2="256" y2="392" stroke="#c9d2c2" stroke-width="8"/>
+  <g stroke="#9fb098" stroke-width="12" stroke-linecap="round">
+    <line x1="156" y1="168" x2="232" y2="168"/>
+    <line x1="156" y1="208" x2="232" y2="208"/>
+    <line x1="156" y1="248" x2="232" y2="248"/>
+    <line x1="280" y1="168" x2="356" y2="168"/>
+    <line x1="280" y1="208" x2="356" y2="208"/>
+    <line x1="280" y1="248" x2="356" y2="248"/>
+  </g>
+  <text x="256" y="372" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="120" font-weight="700" fill="#5f7355">R</text>
+</svg>
