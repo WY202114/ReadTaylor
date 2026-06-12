@@ -1926,7 +1926,9 @@ button:active,
 }
 
 @media (max-width: 620px) {
-  /* 顶栏收成一条悬浮细条：只留 进度 + 菜单按钮，浮在正文上方不再占整块版面 */
+  /* 顶栏收成一条悬浮细条：只留 进度 + 菜单按钮，浮在正文上方不再占整块版面。
+     注意：底部菜单(position:fixed)就放在这个元素里，所以这里绝不能有
+     backdrop-filter / transform，否则 fixed 会被劫持成相对顶栏定位 */
   .reader-toolbar {
     position: absolute;
     z-index: 6;
@@ -1937,14 +1939,23 @@ button:active,
     margin: 0;
     flex-wrap: nowrap;
     padding: 6px 8px 6px 12px;
-    transition: transform 0.26s ease, opacity 0.2s ease;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: color-mix(in srgb, var(--panel) 94%, transparent);
+    transition: opacity 0.2s ease, visibility 0.2s ease;
   }
 
-  /* 下滑阅读时顶栏滑出屏幕，上滑 / 轻点正文 / 开菜单时回来（见 app.js） */
+  /* 下滑阅读时顶栏淡出（不用 transform，避免劫持 fixed），上滑 / 轻点正文 / 开菜单时回来 */
   .app-shell.toolbar-hidden .reader-toolbar {
-    transform: translateY(-150%);
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
+  }
+
+  /* 菜单打开时把顶栏层级抬到遮罩之上：底部菜单在顶栏的层叠上下文里，
+     不抬的话整个菜单会被遮罩盖住（之前线上就是这个 bug） */
+  .app-shell.actions-open .reader-toolbar {
+    z-index: 32;
   }
 
   /* 顶栏悬浮后，正文留出顶部空间避免首行被压住 */
