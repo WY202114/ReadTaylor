@@ -4531,6 +4531,7 @@ const fidelity = {
   toc: [], // [{ label, target }] target: epub href / pdf 页码
   resizeTimer: 0,
   opening: false,
+  errorGuard: null,
 };
 
 function openFilesDb() {
@@ -4642,6 +4643,9 @@ function closeFidelityView() {
   if (fidelity.pdfObserver) {
     fidelity.pdfObserver.disconnect();
   }
+  if (fidelity.errorGuard) {
+    fidelity.errorGuard.disconnect();
+  }
   fidelity.type = null;
   fidelity.epubBook = null;
   fidelity.rendition = null;
@@ -4650,6 +4654,7 @@ function closeFidelityView() {
   fidelity.toc = [];
   fidelity.lastEpubPercent = null;
   fidelity.lastEpubCfi = "";
+  fidelity.errorGuard = null;
   dom.fidelityNav.hidden = true;
   dom.fidelityReader.replaceChildren();
 }
@@ -4701,10 +4706,43 @@ async function openFidelityEpub(bytes) {
     flow: "scrolled-doc",
     width: "100%",
     height: "100%",
-    // 原书脚本不执行，只要版式和图片
+    // 原书脚本不执行（sandbox 不带 allow-scripts）：
+    // 盗版书里万一带 JS，同源 iframe 能摸到 localStorage 里的翻译 API Key
     allowScriptedContent: false,
   });
   dom.fidelityNav.hidden = false;
+
+  // 接管书内链接。背景：epub.js 给每章注入 <base href="https://本站/章节路径">，
+  // 它自己的拦截用 link.onclick——而规范规定事件处理器属性在脚本被禁的
+  // 文档（无 allow-scripts 的 sandbox）里不触发，iOS WebKit 严格执行，
+  // 结果点书内目录链接会真导航成本站 404。
+  // 修法：href 失效化（javascript: 在 sandbox 里点击无动作，最坏也只是不跳），
+  // 真实目标存 data-rt-href，用 addEventListener（不受脚本禁用影响）接管跳转
+  fidelity.rendition.hooks.content.register((contents) => {
+    const doc = contents.document;
+    if (!doc) return;
+    doc.querySelectorAll("a[href]").forEach((link) => {
+      const href = link.getAttribute("href") || "";
+      if (/^(https?:|mailto:|javascript:)/i.test(href)) {
+        // 外链在 sandbox 里也打不开，直接禁掉，避免导航出 404
+        link.removeAttribute("href");
+        return;
+      }
+      link.setAttribute("data-rt-href", href);
+      link.setAttribute("href", "javascript:;");
+    });
+    doc.addEventListener(
+      "click",
+      (event) => {
+        const link = event.target?.closest?.("a[data-rt-href]");
+        if (!link) return;
+        event.preventDefault();
+        event.stopPropagation();
+        navigateEpubFidelityHref(contents.sectionIndex, link.getAttribute("data-rt-href"));
+      },
+      true
+    );
+  });
 
   applyFidelityEpubTheme();
 
@@ -4742,7 +4780,70 @@ async function openFidelityEpub(bytes) {
     fidelity.rendition.display(saved?.epubCfi || undefined),
     new Promise((_, reject) => setTimeout(() => reject(new Error("EPUB 渲染超时")), 20000)),
   ]);
+  await sleep(250);
+  assertFidelityDidNotRenderNotFound();
+  startFidelityErrorGuard();
   if (saved?.epubCfi) showToast("已恢复阅读位置");
+}
+
+function getFidelityRenderedText() {
+  const parts = [dom.fidelityReader.textContent || ""];
+  dom.fidelityReader.querySelectorAll("iframe").forEach((iframe) => {
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (doc) {
+        parts.push(doc.body?.innerText || doc.body?.textContent || doc.documentElement?.textContent || "");
+      }
+    } catch {
+      // Cross-origin iframe content cannot be inspected. Ignore it; normal EPUB
+      // content is same-origin/blob-backed in this renderer.
+    }
+  });
+  return parts.join("\n");
+}
+
+function isNotFoundDocumentText(text) {
+  return /404:\s*NOT_FOUND/i.test(text) || /Code:\s*`?NOT_FOUND`?/i.test(text);
+}
+
+function assertFidelityDidNotRenderNotFound() {
+  if (isNotFoundDocumentText(getFidelityRenderedText())) {
+    throw new Error("EPUB 原样排版请求到了不存在的站点资源。");
+  }
+}
+
+function startFidelityErrorGuard() {
+  if (fidelity.errorGuard) fidelity.errorGuard.disconnect();
+  fidelity.errorGuard = new MutationObserver(() => {
+    window.setTimeout(() => {
+      if (!isFidelityActive() || !isNotFoundDocumentText(getFidelityRenderedText())) return;
+      console.warn("原样排版渲染到了 404 页面，已自动切回文本模式。");
+      state.viewMode = "text";
+      saveState();
+      renderAll();
+      showToast("原样排版资源失效，已切回文本模式");
+    }, 120);
+  });
+  fidelity.errorGuard.observe(dom.fidelityReader, { childList: true, subtree: true });
+}
+
+// 书内链接跳转：rawHref 是章节文档里的原始相对路径（如 "part8.html"、
+// "../text/ch2.xhtml#sec3"），要先按当前章节的 spine href 解析成
+// 相对包根的路径，epub.js 的 display() 才认得
+function navigateEpubFidelityHref(sectionIndex, rawHref) {
+  if (!fidelity.rendition || !rawHref) return;
+  let target = rawHref;
+  try {
+    const current = fidelity.epubBook?.spine?.get?.(sectionIndex);
+    const base = new URL(current?.href || "", "https://rt.local/");
+    const resolved = new URL(rawHref, base);
+    target = resolved.pathname.replace(/^\//, "") + (resolved.hash || "");
+  } catch {
+    // 解析失败就把原始 href 交给 epub.js 碰运气
+  }
+  fidelity.rendition.display(target).catch(() => {
+    showToast("没找到链接指向的章节");
+  });
 }
 
 function flattenEpubToc(items, depth = 0, out = []) {

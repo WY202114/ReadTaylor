@@ -90,6 +90,8 @@ const ch1 = xhtml("第一章", `
 <h1>第一章 原样排版测试</h1>
 <p style="color:#2f6b5e;font-weight:bold;">这一段带原书样式（绿色加粗）。</p>
 <blockquote>这是一个引用块，文本模式下会被拍平。</blockquote>
+<p>书内目录链接：<a id="link-to-ch2" href="ch2.xhtml">跳到第二章</a></p>
+<p>外部链接：<a id="link-external" href="https://example.com/">example.com</a></p>
 <p>下面是一张插图：</p>
 <img src="img.png" alt="红色方块" style="width:120px;height:120px;"/>
 <p>插图之后的段落。FIDELITY_MARKER_CH1</p>
