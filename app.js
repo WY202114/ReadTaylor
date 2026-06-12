@@ -37,23 +37,11 @@ const dom = {
   translatorStatus: document.querySelector("#translator-status"),
   translateChapter: document.querySelector("#translate-chapter"),
   clearTranslation: document.querySelector("#clear-translation"),
-  swapTranslationColumns: document.querySelector("#swap-translation-columns"),
-  translateApiKeyRow: document.querySelector("#translate-api-key-row"),
   translateApiKey: document.querySelector("#translate-api-key"),
   translateEndpoint: document.querySelector("#translate-endpoint"),
-  translateEndpointRow: document.querySelector("#translate-endpoint-row"),
   translateModel: document.querySelector("#translate-model"),
-  translateModelRow: document.querySelector("#translate-model-row"),
-  translateSource: document.querySelector("#translate-source"),
   translateTarget: document.querySelector("#translate-target"),
-  translateView: document.querySelector("#translate-view"),
-  translateChunkSize: document.querySelector("#translate-chunk-size"),
   modelPresets: document.querySelector("#model-presets"),
-  providerButtons: {
-    free: document.querySelector("#provider-free"),
-    google: document.querySelector("#provider-google"),
-    model: document.querySelector("#provider-model"),
-  },
   restoreBookmark: document.querySelector("#restore-bookmark"),
   marksButton: document.querySelector("#marks-button"),
   marksPanel: document.querySelector("#marks-panel"),
@@ -113,15 +101,13 @@ const defaultState = {
   importFormat: "auto",
   translator: {
     panelOpen: false,
-    provider: "free",
+    // 翻译总开关：开 = 每段原文下方插译文（文本模式 + EPUB 原样模式共用）
+    enabled: false,
     apiKey: "",
     endpoint: "https://open.bigmodel.cn/api/paas/v4/",
     model: "",
     source: "auto",
     target: "zh-CN",
-    view: "original",
-    parallelMode: false,
-    swapColumns: false,
     chunkSize: 3000,
   },
   settings: {
@@ -149,23 +135,11 @@ let lastToolbarScrollTop = 0;
 let virtualBook = createEmptyVirtualBook();
 let virtualRenderFrame = 0;
 let translationDbPromise = null;
+// 段译文内存缓存：key = createSentenceCacheKey(段原文)，value = 译文
 const sentenceTranslationMemory = new Map();
-const queuedSentenceTranslations = new Map();
-const sentenceTranslationQueue = [];
-// 翻译队列并发 worker 计数：3 个 worker 共享同一队列，
-// 6 个短段同时跑约等于 1 段的时间，避免短段被前面长段卡住
-const TRANSLATION_CONCURRENCY = 3;
-let activeTranslationWorkers = 0;
 const TRANSLATION_REQUEST_DELAY_MIN = 1000;
 const TRANSLATION_REQUEST_DELAY_MAX = 2000;
 const RATE_LIMIT_RETRY_LIMIT = 3;
-
-// 当前在双栏翻译模式下被选中高亮的句对 cacheKey；null 表示无高亮
-let focusedSentenceKey = null;
-// 需要高亮的"对侧"栏：
-//   "original"   —— 用户的点击/选中发生在译文栏，要高亮的是原文栏；
-//   "translated" —— 反过来
-let focusedSentenceSide = null;
 
 // init() 的调用挪到文件最底部，让所有模块级 let/const 都先完成初始化。
 // 之前放在这里时，init() 内的 showToast 会访问下面才声明的 let toastHideTimer，
@@ -253,13 +227,9 @@ function bindEvents() {
   dom.translateToggle.addEventListener("pointercancel", cancelTranslateToggleLongPress);
   dom.translateToggle.addEventListener("pointerleave", cancelTranslateToggleLongPress);
   dom.translatorClose.addEventListener("click", closeTranslatorPanel);
-  dom.translateChapter.addEventListener("click", translateCurrentChapter);
+  dom.translateChapter.addEventListener("click", retranslateCurrentView);
   dom.clearTranslation.addEventListener("click", clearCurrentTranslation);
-  dom.swapTranslationColumns.addEventListener("click", swapTranslationColumns);
   dom.reader.addEventListener("scroll", handleReaderScroll, { passive: true });
-  // 双栏翻译模式下：点击任一侧 → 高亮对侧；拖选文本 → 同样高亮对侧
-  dom.reader.addEventListener("click", handleSentencePairFocus);
-  dom.reader.addEventListener("mouseup", handleSelectionFocus);
   // 选中正文中的纯英文 → 在选区附近弹出查词弹窗
   dom.reader.addEventListener("mouseup", handleLookupSelection);
   dom.fontSize.addEventListener("input", (event) => updateSetting("fontSize", Number(event.target.value)));
@@ -267,19 +237,12 @@ function bindEvents() {
   dom.translateApiKey.addEventListener("input", (event) => updateTranslator("apiKey", event.target.value.trim()));
   dom.translateEndpoint.addEventListener("input", (event) => updateTranslator("endpoint", event.target.value.trim()));
   dom.translateModel.addEventListener("input", (event) => updateTranslator("model", event.target.value.trim()));
-  dom.translateSource.addEventListener("change", (event) => updateTranslator("source", event.target.value));
-  dom.translateTarget.addEventListener("change", (event) => updateTranslator("target", event.target.value));
-  dom.translateView.addEventListener("change", (event) => updateTranslator("view", event.target.value, true));
-  dom.translateChunkSize.addEventListener("change", (event) => updateTranslator("chunkSize", Number(event.target.value)));
+  dom.translateTarget.addEventListener("change", (event) => updateTranslator("target", event.target.value, true));
   dom.modelPresets.addEventListener("click", applyModelPreset);
   window.addEventListener("mousemove", handleImmersivePointer);
 
   Object.entries(dom.themeButtons).forEach(([theme, button]) => {
     button.addEventListener("click", () => updateSetting("theme", theme));
-  });
-
-  Object.entries(dom.providerButtons).forEach(([provider, button]) => {
-    button.addEventListener("click", () => updateTranslator("provider", provider, true));
   });
 
   window.addEventListener("keydown", handleShortcuts);
@@ -965,88 +928,29 @@ function buildVirtualBook() {
 }
 
 function getChapterDisplayParagraphs(chapter, chapterIndex) {
-  if (isParallelTranslationEnabled()) {
-    return getChapterSentencePairs(chapter, chapterIndex);
-  }
-
-  const originalParagraphs = splitParagraphs(chapter.text);
-  const translatedParagraphs = getTranslationForChapter(chapterIndex)?.paragraphs || [];
-  const view = state.translator.view;
-
-  if (view === "translated" && translatedParagraphs.length) {
-    return translatedParagraphs.map((text, paragraphIndex) => ({
-      type: "paragraph",
-      kind: "translated",
-      paragraphIndex,
-      text,
-    }));
-  }
-
-  if (view === "bilingual" && translatedParagraphs.length) {
-    const paragraphs = [];
-    const total = Math.max(originalParagraphs.length, translatedParagraphs.length);
-
-    for (let index = 0; index < total; index += 1) {
-      if (originalParagraphs[index]) {
-        paragraphs.push({
-          type: "paragraph",
-          kind: "original",
-          paragraphIndex: index,
-          text: originalParagraphs[index],
-        });
-      }
-
-      if (translatedParagraphs[index]) {
-        paragraphs.push({
-          type: "paragraph",
-          kind: "translated",
-          paragraphIndex: index,
-          text: translatedParagraphs[index],
-        });
-      }
-    }
-
-    return paragraphs;
-  }
-
-  return originalParagraphs.map((text, paragraphIndex) => ({
+  // 永远只铺原文段落；开翻译时译文由 hydrateVisibleTranslations 在渲染后
+  // 注入到每段下方（段下译文），不再作为独立虚拟块
+  return splitParagraphs(chapter.text).map((text, paragraphIndex) => ({
     type: "paragraph",
     kind: "original",
     paragraphIndex,
+    chapterIndex,
     text,
   }));
 }
 
-function isParallelTranslationEnabled() {
-  return state.translator.parallelMode || state.translator.view === "parallel";
+// 翻译是否开启且配置可用（API Key + Base URL + 模型 三者齐全）
+function isTranslationOn() {
+  return Boolean(
+    state.translator.enabled &&
+    state.translator.apiKey &&
+    normalizeBaseUrl(state.translator.endpoint) &&
+    state.translator.model
+  );
 }
 
-// 双栏对照：每段一个 block，整段做一次翻译请求。
-// 翻译粒度从"句"提到"段"：模型上下文更连贯、请求数也降一个量级。
-// 段 piece 数 = 1：cacheKey 用段原文 hash，渲染/排队/缓存逻辑天然按段对齐。
-function getChapterSentencePairs(chapter, chapterIndex) {
-  const paragraphs = splitParagraphs(chapter.text);
-
-  return paragraphs
-    .map((paragraphText, paragraphIndex) => {
-      const text = normalizeText(paragraphText).replace(/\s+/g, " ").trim();
-      if (!text) return null;
-      return {
-        type: "paragraph-pair",
-        kind: "parallel",
-        chapterIndex,
-        paragraphIndex,
-        sentences: [
-          {
-            text,
-            sentenceIndex: paragraphIndex,
-            cacheKey: createSentenceCacheKey(text),
-          },
-        ],
-        text,
-      };
-    })
-    .filter(Boolean);
+function hasTranslatorConfig() {
+  return Boolean(state.translator.apiKey && normalizeBaseUrl(state.translator.endpoint) && state.translator.model);
 }
 
 // 将一段文本切成"一句一行"。
@@ -1183,15 +1087,13 @@ function estimateParagraphHeight(text, metrics, kind) {
 }
 
 function estimateBlockHeight(block, metrics) {
-  if (block.type === "paragraph-pair") {
-    const columnWidth = Math.max(220, (metrics.width - 28) / 2);
-    const charsPerLine = Math.max(10, Math.floor(columnWidth / (metrics.fontSize * 0.95)));
-    // 段落总长：两栏理论上等长，取原文长度做估算即可
-    const lines = Math.max(1, Math.ceil(block.text.length / charsPerLine));
-    return Math.ceil(lines * metrics.fontSize * metrics.lineHeight + metrics.fontSize * 1.4);
+  // 段下译文：译文行额外占一段高度（估算用，真实高度渲染后由
+  // measureRenderedBlocks 校正，所以略大于实际也无妨）
+  const base = estimateParagraphHeight(block.text, metrics, block.kind);
+  if (isTranslationOn()) {
+    return base + estimateParagraphHeight(block.text, metrics, "translated");
   }
-
-  return estimateParagraphHeight(block.text, metrics, block.kind);
+  return base;
 }
 
 function createVirtualReaderShell() {
@@ -1206,69 +1108,7 @@ function createVirtualReaderShell() {
   windowNode.className = "virtual-window";
 
   content.append(topSpacer, windowNode);
-
-  // 双栏翻译模式下追加一条可拖动的分界线（独立浮层，不影响虚拟列表渲染）
-  if (isParallelTranslationEnabled()) {
-    content.append(createParallelDivider());
-  }
-
   return content;
-}
-
-// 创建双栏翻译模式下的可拖动分界线
-function createParallelDivider() {
-  const divider = document.createElement("div");
-  divider.className = "parallel-divider";
-  divider.setAttribute("role", "separator");
-  divider.setAttribute("aria-orientation", "vertical");
-  divider.setAttribute("aria-label", "拖动调整左右两栏宽度");
-  divider.title = "拖动以调整左右栏宽度";
-  bindParallelDividerDrag(divider);
-  return divider;
-}
-
-// 绑定分界线的拖动交互：实时更新 --parallel-ratio，释放时持久化并重排虚拟布局
-function bindParallelDividerDrag(divider) {
-  function handleMove(event) {
-    const host = divider.parentElement;
-    if (!host) return;
-    const bounds = host.getBoundingClientRect();
-    // 与 CSS 中 left = ratio*(W-24)+12 一致：反解 ratio = (x-12)/(W-24)
-    const usable = bounds.width - 24;
-    if (usable <= 0) return;
-    const ratio = clamp((event.clientX - bounds.left - 12) / usable, 0.2, 0.8);
-    state.settings.parallelRatio = ratio;
-    dom.shell.style.setProperty("--parallel-ratio", ratio.toFixed(3));
-  }
-
-  function handleUp(event) {
-    divider.classList.remove("dragging");
-    try {
-      divider.releasePointerCapture(event.pointerId);
-    } catch {
-      // 浏览器可能未支持指针捕获，忽略即可
-    }
-    document.removeEventListener("pointermove", handleMove);
-    document.removeEventListener("pointerup", handleUp);
-    document.removeEventListener("pointercancel", handleUp);
-    saveState();
-    // 比例变化后段落自动换行结果会变，重算虚拟高度以保持滚动稳定
-    rebuildVirtualLayout();
-  }
-
-  divider.addEventListener("pointerdown", (event) => {
-    if (event.button !== undefined && event.button !== 0) return;
-    event.preventDefault();
-    divider.classList.add("dragging");
-    try {
-      divider.setPointerCapture(event.pointerId);
-    } catch {
-      // 同上：捕获失败不影响后续 move/up 监听
-    }
-    document.addEventListener("pointermove", handleMove);
-    document.addEventListener("pointerup", handleUp);
-    document.addEventListener("pointercancel", handleUp);
-  });
 }
 
 function scheduleVirtualRender() {
@@ -1310,7 +1150,7 @@ function renderVirtualWindow() {
 
   windowNode.append(fragment);
   measureRenderedBlocks(startIndex, windowNode);
-  hydrateVisibleSentenceTranslations(windowNode);
+  hydrateVisibleTranslations(windowNode);
   content.style.height = `${Math.max(virtualBook.totalHeight, dom.reader.clientHeight)}px`;
   restoreTtsStateIfVisible();
 }
@@ -1333,66 +1173,33 @@ function restoreTtsStateIfVisible() {
 }
 
 function createVirtualBlock(block, index) {
-  if (block.type === "paragraph-pair") {
-    return createParagraphPairBlock(block, index);
+  // 关翻译，或不是原文段：照常单段渲染
+  if (!isTranslationOn() || block.kind !== "original") {
+    const paragraph = createParagraph(block.text, block.kind);
+    paragraph.dataset.virtualIndex = String(index);
+    return paragraph;
   }
 
-  const paragraph = createParagraph(block.text, block.kind);
-  paragraph.dataset.virtualIndex = String(index);
-  return paragraph;
-}
+  // 开翻译：原文段 + 段下译文，包在一个 .rt-para 块里（块本身带 virtualIndex）
+  const wrap = document.createElement("div");
+  wrap.className = "rt-para";
+  wrap.dataset.virtualIndex = String(index);
+  const key = createSentenceCacheKey(block.text);
+  wrap.dataset.transKey = key;
 
-// 段落对：一行 = 一段，段内由多个 .sentence-piece 流式排版，
-// 这样视觉上保留原书段落形态，同时每个句子仍可独立点击/高亮
-function createParagraphPairBlock(block, index) {
-  const row = document.createElement("div");
-  row.className = "sentence-pair";
-  row.dataset.virtualIndex = String(index);
-
-  const original = createParagraphCell(block, "original");
-  const translated = createParagraphCell(block, "translated");
-
-  if (state.translator.swapColumns) {
-    row.append(translated, original);
+  const original = createParagraph(block.text, "original");
+  const trans = document.createElement("p");
+  trans.className = "translated-paragraph rt-trans";
+  const cached = getSentenceMemoryValue(key);
+  if (cached) {
+    trans.textContent = cached;
+    trans.dataset.status = "ready";
   } else {
-    row.append(original, translated);
+    trans.textContent = "翻译中…";
+    trans.dataset.status = "pending";
   }
-
-  return row;
-}
-
-function createParagraphCell(block, side) {
-  const cell = document.createElement("p");
-  cell.className = `sentence-cell ${side}-cell`;
-  block.sentences.forEach((sentence, pieceIndex) => {
-    // 英文/混排相邻句子之间需要空格；CJK 句末标点（。！？；…）紧贴下一句更自然
-    if (pieceIndex > 0) {
-      const prevEnd = (block.sentences[pieceIndex - 1].text || "").slice(-1);
-      if (prevEnd && !/[。！？；…]/.test(prevEnd)) cell.append(" ");
-    }
-    const piece = document.createElement("span");
-    piece.className = "sentence-piece";
-    piece.dataset.cacheKey = sentence.cacheKey;
-    piece.dataset.side = side;
-    if (side === "translated") {
-      const cached = getSentenceMemoryValue(sentence.cacheKey);
-      piece.textContent = cached || "翻译中...";
-      piece.dataset.status = cached ? "ready" : "loading";
-    } else {
-      piece.textContent = sentence.text;
-      piece.dataset.status = "ready";
-    }
-    // 虚拟滚动重建时恢复焦点高亮
-    if (
-      focusedSentenceKey &&
-      sentence.cacheKey === focusedSentenceKey &&
-      focusedSentenceSide === side
-    ) {
-      piece.classList.add("is-piece-focused");
-    }
-    cell.append(piece);
-  });
-  return cell;
+  wrap.append(original, trans);
+  return wrap;
 }
 
 function getSentenceMemoryValue(key) {
@@ -1448,40 +1255,88 @@ function recomputeVirtualOffsets() {
   virtualBook.totalHeight = offset;
 }
 
-function hydrateVisibleSentenceTranslations(windowNode) {
-  if (!isParallelTranslationEnabled()) return;
-
-  const rows = [...windowNode.querySelectorAll(".sentence-pair")];
-  rows.forEach((row) => {
-    const index = Number(row.dataset.virtualIndex);
+// 文本模式段下译文：翻译当前窗口里可见的原文段，回填 .rt-trans 后重测高度
+function hydrateVisibleTranslations(windowNode) {
+  if (!isTranslationOn()) return;
+  const pending = [];
+  windowNode.querySelectorAll(".rt-para").forEach((wrap) => {
+    const transEl = wrap.querySelector(".rt-trans");
+    const index = Number(wrap.dataset.virtualIndex);
     const block = virtualBook.blocks[index];
-    if (!block || block.type !== "paragraph-pair") return;
-    block.sentences.forEach((piece) => hydrateSentencePiece(piece));
+    if (!transEl || !block) return;
+    if (transEl.dataset.status === "ready" || transEl.dataset.status === "loading") return;
+
+    const key = wrap.dataset.transKey;
+    const cached = getSentenceMemoryValue(key);
+    if (cached) {
+      transEl.textContent = cached;
+      transEl.dataset.status = "ready";
+      return;
+    }
+    transEl.dataset.status = "loading";
+    pending.push({ key, text: block.text });
+  });
+  if (pending.length) runTextTranslationBatch(pending, windowNode);
+}
+
+async function runTextTranslationBatch(pending, windowNode) {
+  try {
+    const translations = await translateBlocks(pending.map((p) => p.text));
+    pending.forEach((item, i) => fillTextTranslation(item.key, translations[i] || item.text, "ready"));
+    // 译文撑高了段落，重测高度修正后续段偏移，避免滚动跳动
+    measureRenderedBlocks(virtualBook.renderedRange[0], windowNode);
+  } catch (error) {
+    pending.forEach((item) => fillTextTranslation(item.key, getTranslateErrorMessage(error), "error"));
+    setTranslatorStatus(getTranslateErrorMessage(error), "error");
+  }
+}
+
+function fillTextTranslation(key, text, status) {
+  const selector = `.rt-para[data-trans-key="${cssEscape(key)}"] .rt-trans`;
+  dom.reader.querySelectorAll(selector).forEach((transEl) => {
+    transEl.textContent = text;
+    transEl.dataset.status = status;
   });
 }
 
-async function hydrateSentencePiece(piece) {
-  const cached = sentenceTranslationMemory.get(piece.cacheKey) || (await getCachedSentenceTranslation(piece.cacheKey));
-
-  if (cached) {
-    updateRenderedSentence(piece.cacheKey, cached, "ready");
-    return;
+// 段下译文引擎：输入原文段数组 → 返回对齐的译文数组。
+// 先查缓存（内存 + IndexedDB）和"不必翻译"短路，未命中的整批送模型，回填缓存。
+async function translateBlocks(texts) {
+  const results = new Array(texts.length);
+  const need = [];
+  for (let i = 0; i < texts.length; i += 1) {
+    const text = texts[i];
+    const key = createSentenceCacheKey(text);
+    if (isUntranslatable(text)) {
+      sentenceTranslationMemory.set(key, text);
+      results[i] = text;
+      continue;
+    }
+    const cached = sentenceTranslationMemory.get(key) || (await getCachedSentenceTranslation(key));
+    if (cached) {
+      results[i] = cached;
+      continue;
+    }
+    need.push({ i, text, key });
   }
+  if (!need.length) return results;
 
-  // 不需要翻译的"段"（纯数字编号、ISBN、URL、纯标点符号）：直接显示原文，
-  // 省一次 API 调用；这种段塞进队列只会拖慢真正需要翻译的文本
-  if (isUntranslatable(piece.text)) {
-    sentenceTranslationMemory.set(piece.cacheKey, piece.text);
-    updateRenderedSentence(piece.cacheKey, piece.text, "ready");
-    return;
+  setTranslatorStatus(`正在翻译 ${need.length} 段…`, "loading");
+  const translated = await translateWithModel(need.map((n) => n.text), state.book?.title || "");
+  for (let k = 0; k < need.length; k += 1) {
+    const value = translated[k] || need[k].text;
+    results[need[k].i] = value;
+    sentenceTranslationMemory.set(need[k].key, value);
+    // 缓存写库失败不阻塞展示
+    setCachedSentenceTranslation(need[k].key, value, {
+      target: state.translator.target,
+      model: state.translator.model,
+      endpoint: normalizeBaseUrl(state.translator.endpoint),
+      textHash: hashText(need[k].text),
+    });
   }
-
-  if (!canUseParallelTranslator()) {
-    updateRenderedSentence(piece.cacheKey, "请在翻译设置中填写 API Key 和模型名。", "missing");
-    return;
-  }
-
-  queueSentenceTranslation(piece);
+  setTranslatorStatus("译文已生成并缓存到本地。", "success");
+  return results;
 }
 
 // 判断这段文本是不是"不值得翻译"——译出来还是原文样
@@ -1498,111 +1353,6 @@ function isUntranslatable(text) {
   // 完全没有字母也没有 CJK，纯符号/数字
   if (!/[a-zA-Z一-鿿]/.test(trimmed)) return true;
   return false;
-}
-
-// 译文按 piece 替换：在已渲染 DOM 里找 cacheKey 对应的"译文侧"span，
-// 替换其文本和状态。原文侧的 piece 不动。
-function updateSentencePiece(piece, text, status) {
-  piece.textContent = text;
-  piece.dataset.status = status;
-}
-
-function canUseParallelTranslator() {
-  return Boolean(state.translator.apiKey && state.translator.endpoint && state.translator.model);
-}
-
-function queueSentenceTranslation(block) {
-  if (queuedSentenceTranslations.has(block.cacheKey)) return;
-
-  updateRenderedSentence(block.cacheKey, "翻译排队中", "loading");
-  const item = {
-    cacheKey: block.cacheKey,
-    text: block.text,
-  };
-  queuedSentenceTranslations.set(block.cacheKey, item);
-  sentenceTranslationQueue.push(item);
-  setTranslatorStatus(`翻译排队中：还有 ${sentenceTranslationQueue.length} 条等待处理。`, "loading");
-  runSentenceTranslationQueue();
-}
-
-function runSentenceTranslationQueue() {
-  // 启动到上限的 worker；已经在跑的不重复启动
-  while (activeTranslationWorkers < TRANSLATION_CONCURRENCY && sentenceTranslationQueue.length) {
-    spawnSentenceTranslationWorker();
-  }
-}
-
-async function spawnSentenceTranslationWorker() {
-  activeTranslationWorkers += 1;
-  try {
-    while (sentenceTranslationQueue.length) {
-      const item = sentenceTranslationQueue.shift();
-      if (!item || queuedSentenceTranslations.get(item.cacheKey) !== item) continue;
-
-      updateRenderedSentence(item.cacheKey, "翻译中...", "loading");
-      setTranslatorStatus(
-        `翻译进行中：${activeTranslationWorkers} 个并发，队列剩余 ${sentenceTranslationQueue.length} 条。`,
-        "loading"
-      );
-
-      try {
-        const translation = await translateSentenceWithModel(item.text);
-        await setCachedSentenceTranslation(item.cacheKey, translation, {
-          source: detectLanguage(item.text),
-          target: state.translator.target,
-          model: state.translator.model,
-          endpoint: normalizeBaseUrl(state.translator.endpoint),
-          textHash: hashText(item.text),
-        });
-        updateRenderedSentence(item.cacheKey, translation);
-      } catch (error) {
-        updateRenderedSentence(item.cacheKey, getTranslateErrorMessage(error), "error");
-        setTranslatorStatus(getTranslateErrorMessage(error), "error");
-      } finally {
-        queuedSentenceTranslations.delete(item.cacheKey);
-      }
-      // worker 之间不互相 sleep；如果命中 429，fetchWithRateLimitRetry 会自动退避重试
-    }
-  } finally {
-    activeTranslationWorkers -= 1;
-    if (activeTranslationWorkers === 0 && queuedSentenceTranslations.size === 0) {
-      setTranslatorStatus("可见内容已按队列翻译并缓存。", "success");
-    }
-  }
-}
-
-function legacyQueueSentenceTranslation(block) {
-  if (pendingSentenceTranslations.has(block.cacheKey)) return;
-
-  updateRenderedSentence(block.cacheKey, "翻译中...", "loading");
-  const promise = translateSentenceWithModel(block.text)
-    .then(async (translation) => {
-      await setCachedSentenceTranslation(block.cacheKey, translation, {
-        source: detectLanguage(block.text),
-        target: state.translator.target,
-        model: state.translator.model,
-        endpoint: normalizeBaseUrl(state.translator.endpoint),
-        textHash: hashText(block.text),
-      });
-      updateRenderedSentence(block.cacheKey, translation);
-      setTranslatorStatus("可见内容已按段翻译并缓存。", "success");
-    })
-    .catch((error) => {
-      updateRenderedSentence(block.cacheKey, getTranslateErrorMessage(error), "error");
-      setTranslatorStatus(getTranslateErrorMessage(error), "error");
-    })
-    .finally(() => {
-      pendingSentenceTranslations.delete(block.cacheKey);
-    });
-
-  pendingSentenceTranslations.set(block.cacheKey, promise);
-}
-
-function updateRenderedSentence(cacheKey, translation, status = "ready") {
-  const selector = `.sentence-piece[data-side="translated"][data-cache-key="${cssEscape(cacheKey)}"]`;
-  dom.reader.querySelectorAll(selector).forEach((piece) => {
-    updateSentencePiece(piece, translation, status);
-  });
 }
 
 function findBlockIndexAt(scrollTop) {
@@ -1762,7 +1512,7 @@ function updateButtons() {
   dom.ttsButton.disabled = !hasBook || !ttsSupported();
   dom.restoreBookmark.disabled = !hasBook || !state.bookmark;
   dom.translateChapter.disabled = !hasBook;
-  dom.clearTranslation.disabled = !hasBook || !getCurrentTranslation();
+  dom.clearTranslation.disabled = !hasBook || !isTranslationOn();
   if (dom.layoutToggle) {
     dom.layoutToggle.disabled = !hasBook;
     dom.layoutToggle.classList.toggle("active", isFidelityActive());
@@ -1852,8 +1602,7 @@ function handleTranslateToggleClick() {
     translateToggleLongPressTriggered = false;
     return;
   }
-  ensureTextModeFor("翻译");
-  toggleParallelTranslation();
+  toggleTranslation();
 }
 
 function handleTranslateToggleContextMenu(event) {
@@ -1874,355 +1623,104 @@ function cancelTranslateToggleLongPress() {
   window.clearTimeout(translateToggleLongPressTimer);
 }
 
-// 顶部 "翻译" 按钮的一键开关：
-//   关 → 开：切到双栏模式，hydrate 时会自动把可见句对加入翻译队列；
-//   开 → 关：恢复原文视图、清空待翻译队列、释放高亮状态。
-// 未填好 Base URL / API Key / 模型 时不允许开启，自动弹出设置面板提示。
-function toggleParallelTranslation() {
-  if (isParallelTranslationEnabled()) {
-    const progress = getScrollProgress();
-    state.translator.parallelMode = false;
-    if (state.translator.view === "parallel") {
-      state.translator.view = "original";
-    }
-    // 关掉翻译时把待处理队列清掉，避免后台继续消耗 API 配额
-    queuedSentenceTranslations.clear();
-    sentenceTranslationQueue.length = 0;
-    focusedSentenceKey = null;
-    focusedSentenceSide = null;
-    persistCurrentScroll();
+// 顶部「翻译」按钮一键开关：开 = 每段原文下方插译文（文本 / EPUB 原样模式共用）。
+// 配置不全时弹出设置面板提示；长按 / 右键打开设置面板。
+function toggleTranslation() {
+  if (!state.book) return;
+
+  if (state.translator.enabled) {
+    state.translator.enabled = false;
     saveState();
     applyTranslatorSettings();
-    renderReader();
-    restoreScroll(progress * Math.max(1, dom.reader.scrollHeight - dom.reader.clientHeight));
-    updateButtons();
-    setTranslatorStatus("已关闭翻译，正文已恢复原文。", "success");
+    refreshAfterTranslationToggle();
+    setTranslatorStatus("已关闭翻译，恢复原文。", "success");
     return;
   }
 
-  if (!canUseParallelTranslator()) {
+  if (!hasTranslatorConfig()) {
     state.translator.panelOpen = true;
     applyTranslatorSettings();
     saveState();
-    setTranslatorStatus("请先填写 Base URL、API Key 和模型名后再开启翻译。", "error");
+    setTranslatorStatus("请先填写 Base URL、API Key、模型后再开启翻译。", "error");
     return;
   }
 
-  const progress = getScrollProgress();
-  state.translator.parallelMode = true;
-  state.translator.view = "parallel";
-  state.translator.provider = "model";
-  persistCurrentScroll();
+  state.translator.enabled = true;
   saveState();
   applyTranslatorSettings();
+  refreshAfterTranslationToggle();
+  setTranslatorStatus("已开启翻译，可见内容会自动按段翻译。", "loading");
+}
+
+// 开关 / 改配置后按当前模式刷新：
+//   文本模式 → 重渲染正文并保持滚动位置（段下译文随窗口懒翻译）
+//   EPUB 原样模式 → 往 iframe 注入或移除段下译文
+//   PDF 原样模式 → 画布无正文流，翻译开时切回文本模式
+function refreshAfterTranslationToggle() {
+  if (isFidelityActive()) {
+    if (fidelity.type === "epub") {
+      applyFidelityTranslation();
+    } else if (state.translator.enabled) {
+      ensureTextModeFor("翻译");
+    }
+    return;
+  }
+  const progress = getScrollProgress();
   renderReader();
   restoreScroll(progress * Math.max(1, dom.reader.scrollHeight - dom.reader.clientHeight));
   updateButtons();
-  // 切换到双栏模式后 renderVirtualWindow → hydrateVisibleSentenceTranslations
-  // 会自动把可见句对入队，无需再手动触发
-  setTranslatorStatus("已开启翻译，可见内容将按队列自动翻译。", "loading");
 }
 
 function updateTranslator(key, value, shouldRender = false) {
   state.translator[key] = value;
-
-  if (key === "provider") {
-    if (value === "free") {
-      state.translator.model = "";
-    } else if (value === "google") {
-      state.translator.endpoint = GOOGLE_TRANSLATE_ENDPOINT;
-      state.translator.model = "";
-    } else if (state.translator.endpoint === GOOGLE_TRANSLATE_ENDPOINT || !state.translator.endpoint) {
-      state.translator.endpoint = "https://open.bigmodel.cn/api/paas/v4/";
-    }
-  }
-
-  if (key === "parallelMode") {
-    state.translator.view = value ? "parallel" : "original";
-    state.translator.provider = "model";
-    state.translator.endpoint = state.translator.endpoint || "https://open.bigmodel.cn/api/paas/v4/";
-  }
-
-  if (key === "view") {
-    state.translator.parallelMode = value === "parallel";
-    if (value === "parallel") {
-      state.translator.provider = "model";
-      state.translator.endpoint = state.translator.endpoint || "https://open.bigmodel.cn/api/paas/v4/";
-    }
-  }
-
   applyTranslatorSettings();
-  persistCurrentScroll();
   saveState();
-
-  if (shouldRender) {
-    const progress = getScrollProgress();
-    renderReader();
-    restoreScroll(progress * Math.max(1, dom.reader.scrollHeight - dom.reader.clientHeight));
-    updateButtons();
+  if (shouldRender && isTranslationOn()) {
+    refreshAfterTranslationToggle();
   }
 }
 
 function applyTranslatorSettings() {
   const translator = state.translator;
-  const providerLabel = getTranslatorProviderLabel();
   dom.translatorPanel.hidden = !translator.panelOpen;
-  // "翻译" 按钮高亮 = 翻译已开启（设置面板的打开状态不再单独反映在工具栏上）
-  dom.translateToggle.classList.toggle("active", isParallelTranslationEnabled());
-  dom.translatorCurrent.textContent = providerLabel;
+  dom.translateToggle.classList.toggle("active", isTranslationOn());
+  dom.translatorCurrent.textContent = translator.model || "未配置";
   dom.translateApiKey.value = translator.apiKey || "";
   dom.translateEndpoint.value = translator.endpoint || "";
   dom.translateModel.value = translator.model || "";
-  dom.translateSource.value = translator.source;
   dom.translateTarget.value = translator.target;
-  dom.translateView.value = translator.view;
-  dom.translateChunkSize.value = String(translator.chunkSize);
-  dom.translateApiKeyRow.hidden = translator.provider === "free" && !isParallelTranslationEnabled();
-  dom.translateEndpointRow.hidden = translator.provider !== "model" && !isParallelTranslationEnabled();
-  dom.translateModelRow.hidden = translator.provider !== "model" && !isParallelTranslationEnabled();
-  dom.modelPresets.hidden = translator.provider !== "model" && !isParallelTranslationEnabled();
-  dom.swapTranslationColumns.disabled = !isParallelTranslationEnabled();
-  dom.translateChapter.textContent = isParallelTranslationEnabled() ? "翻译可见内容" : "翻译当前章";
-
-  Object.entries(dom.providerButtons).forEach(([provider, button]) => {
-    button.classList.toggle("active", provider === translator.provider);
-  });
-}
-
-function getTranslatorProviderLabel() {
-  if (state.translator.provider === "free") return "免费翻译";
-  if (state.translator.provider === "google") return "谷歌 API";
-  return state.translator.model || "自定义模型";
 }
 
 function applyModelPreset(event) {
   const button = event.target.closest("button[data-endpoint]");
   if (!button) return;
-
-  state.translator.provider = "model";
   state.translator.endpoint = button.dataset.endpoint || "";
   state.translator.model = button.dataset.model || "";
   applyTranslatorSettings();
   saveState();
 }
 
-function swapTranslationColumns() {
-  const progress = getScrollProgress();
-  state.translator.swapColumns = !state.translator.swapColumns;
-  saveState();
-  renderReader();
-  restoreScroll(progress * Math.max(1, dom.reader.scrollHeight - dom.reader.clientHeight));
-}
-
-async function translateCurrentChapter() {
-  if (isParallelTranslationEnabled()) {
-    translateVisibleSentences();
-    return;
-  }
-
-  const chapter = state.chapters[state.currentChapterIndex];
-  if (!chapter) return;
-
-  if (state.translator.provider !== "free" && !state.translator.apiKey) {
-    setTranslatorStatus("请先填写 API Key。", "error");
-    openTranslatorPanel();
-    return;
-  }
-
-  if (state.translator.provider === "model" && (!state.translator.endpoint || !state.translator.model)) {
-    setTranslatorStatus("请填写模型接口地址和模型名称。", "error");
-    openTranslatorPanel();
-    return;
-  }
-
-  const cached = getCurrentTranslation();
-  if (cached) {
-    const progress = getScrollProgress();
-    state.translator.view = state.translator.view === "original" ? "bilingual" : state.translator.view;
+// 设置面板「翻译当前内容」按钮：没开就开；已开则重译当前视图
+function retranslateCurrentView() {
+  if (!hasTranslatorConfig()) {
+    state.translator.panelOpen = true;
     applyTranslatorSettings();
-    renderReader();
-    restoreScroll(progress * Math.max(1, dom.reader.scrollHeight - dom.reader.clientHeight));
-    setTranslatorStatus("已使用缓存译文。", "success");
+    setTranslatorStatus("请先填写 Base URL、API Key、模型。", "error");
     return;
   }
-
-  const paragraphs = splitParagraphs(chapter.text);
-  if (!paragraphs.length) return;
-
-  setTranslatorBusy(true);
-  setTranslatorStatus("正在翻译当前章节...", "loading");
-
-  try {
-    const translatedParagraphs = await translateParagraphs(paragraphs, chapter.title);
-
-    const key = getTranslationKey();
-    state.translations[key] = {
-      paragraphs: normalizeTranslatedParagraphs(translatedParagraphs, paragraphs),
-      provider: state.translator.provider,
-      endpoint: state.translator.provider === "model" ? state.translator.endpoint : "",
-      model: state.translator.model,
-      source: state.translator.source,
-      target: state.translator.target,
-      createdAt: Date.now(),
-    };
-    const progress = getScrollProgress();
-    state.translator.view = "bilingual";
-    saveState();
-    applyTranslatorSettings();
-    renderReader();
-    restoreScroll(progress * Math.max(1, dom.reader.scrollHeight - dom.reader.clientHeight));
-    updateButtons();
-    setTranslatorStatus("翻译完成，已缓存当前章节。", "success");
-  } catch (error) {
-    setTranslatorStatus(getTranslateErrorMessage(error), "error");
-  } finally {
-    setTranslatorBusy(false);
-  }
-}
-
-function translateVisibleSentences() {
-  if (!state.chapters.length) return;
-
-  if (!canUseParallelTranslator()) {
-    setTranslatorStatus("请填写 Base URL、API Key 和模型名后再开启双栏翻译。", "error");
-    openTranslatorPanel();
+  if (!state.translator.enabled) {
+    toggleTranslation();
     return;
   }
-
-  const rows = [...dom.reader.querySelectorAll(".sentence-pair")];
-  let pieceCount = 0;
-  rows.forEach((row) => {
-    const index = Number(row.dataset.virtualIndex);
-    const block = virtualBook.blocks[index];
-    if (!block || block.type !== "paragraph-pair") return;
-    block.sentences.forEach((piece) => {
-      queueSentenceTranslation(piece);
-      pieceCount += 1;
-    });
-  });
-  setTranslatorStatus(`已提交 ${pieceCount} 段可见内容进行翻译。`, "loading");
-}
-
-function translateParagraphs(paragraphs, title) {
-  if (state.translator.provider === "free") {
-    return translateWithFreeGoogle(paragraphs);
+  if (isFidelityActive() && fidelity.type === "epub") {
+    applyFidelityTranslation(true);
+    return;
   }
-
-  if (state.translator.provider === "google") {
-    return translateWithGoogle(paragraphs);
+  const windowNode = dom.reader.querySelector(".virtual-window");
+  if (windowNode) {
+    windowNode.querySelectorAll(".rt-trans").forEach((el) => { el.dataset.status = "pending"; });
+    hydrateVisibleTranslations(windowNode);
   }
-
-  return translateWithModel(paragraphs, title);
-}
-
-async function translateWithFreeGoogle(paragraphs) {
-  const translated = [];
-  let requestCount = 0;
-
-  for (const paragraph of paragraphs) {
-    const pieces = splitTextForFreeApi(paragraph, 480);
-    const translatedPieces = [];
-
-    for (const piece of pieces) {
-      if (requestCount > 0) {
-        await waitForNextTranslationRequest();
-      }
-      translatedPieces.push(await translateFreePiece(piece, paragraphs.join("\n")));
-      requestCount += 1;
-    }
-
-    translated.push(translatedPieces.join(""));
-  }
-
-  return translated;
-}
-
-async function translateFreePiece(text, sampleText) {
-  try {
-    return await translateWithMyMemory(text, sampleText);
-  } catch (primaryError) {
-    try {
-      return await translateWithPublicGoogle(text, sampleText);
-    } catch {
-      throw primaryError;
-    }
-  }
-}
-
-async function translateWithMyMemory(text, sampleText) {
-  const url = new URL("https://api.mymemory.translated.net/get");
-  url.searchParams.set("q", text);
-  url.searchParams.set("langpair", `${inferFreeSourceLanguage(sampleText)}|${normalizeMyMemoryLanguage(state.translator.target)}`);
-
-    const response = await fetchWithRateLimitRetry(() => fetch(url.toString()));
-  const data = await parseJsonResponse(response);
-  const translatedText = data?.responseData?.translatedText;
-
-  if (!translatedText || isMyMemoryLimitMessage(translatedText)) {
-    throw new Error(data?.responseDetails || "免费翻译暂时没有返回译文。");
-  }
-
-  return decodeHtmlEntities(translatedText);
-}
-
-function isMyMemoryLimitMessage(text) {
-  return /limit|quota|too many|invalid/i.test(text);
-}
-
-async function translateWithPublicGoogle(text, sampleText) {
-  const url = new URL("https://translate.googleapis.com/translate_a/single");
-  url.searchParams.set("client", "gtx");
-  url.searchParams.set("sl", inferFreeSourceLanguage(sampleText));
-  url.searchParams.set("tl", normalizeFreeTranslateLanguage(state.translator.target));
-  url.searchParams.set("dt", "t");
-  url.searchParams.set("q", text);
-
-  const response = await fetchWithRateLimitRetry(() => fetch(url.toString()));
-  const data = await parseJsonResponse(response);
-  return parseFreeGoogleResponse(data);
-}
-
-async function translateWithGoogle(paragraphs) {
-  const batches = splitIntoBatches(paragraphs, state.translator.chunkSize);
-  const translated = [];
-
-  for (const [index, batch] of batches.entries()) {
-    if (index > 0) {
-      await waitForNextTranslationRequest();
-    }
-
-    const url = new URL(state.translator.endpoint || GOOGLE_TRANSLATE_ENDPOINT);
-    url.searchParams.set("key", state.translator.apiKey);
-
-    const body = {
-      q: batch,
-      target: normalizeGoogleLanguage(state.translator.target),
-      format: "text",
-    };
-
-    if (state.translator.source !== "auto") {
-      body.source = normalizeGoogleLanguage(state.translator.source);
-    }
-
-    const response = await fetchWithRateLimitRetry(() => fetch(url.toString(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    }));
-
-    const data = await parseJsonResponse(response);
-    const items = data?.data?.translations;
-
-    if (!Array.isArray(items)) {
-      throw new Error("谷歌翻译返回格式不正确。");
-    }
-
-    translated.push(...items.map((item) => decodeHtmlEntities(item.translatedText || "")));
-  }
-
-  return translated;
 }
 
 async function translateWithModel(paragraphs, title) {
@@ -2269,45 +1767,6 @@ async function translateWithModel(paragraphs, title) {
   }
 
   return translated;
-}
-
-async function translateSentenceWithModel(sentence) {
-  // 同语言无需翻译：直接复用原文，避免"中→中"被 LLM 重写出措辞略有差异的结果，
-  // 也省掉一次 API 调用。译文栏拿到的就是原文，左右两栏内容一致、保持干净。
-  if (detectLanguage(sentence) === state.translator.target) {
-    return sentence;
-  }
-
-  const response = await fetchWithRateLimitRetry(() => fetch(getChatCompletionsUrl(), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${state.translator.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: state.translator.model,
-      temperature: 0.1,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You translate exactly one sentence. Preserve names, tone, punctuation meaning, and do not add explanations. Return only the translated sentence.",
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            sourceLanguage: detectLanguage(sentence),
-            targetLanguage: state.translator.target,
-            sentence,
-          }),
-        },
-      ],
-    }),
-  }));
-
-  const data = await parseJsonResponse(response);
-  const content = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || "";
-  return cleanModelText(content) || sentence;
 }
 
 function getChatCompletionsUrl() {
@@ -2465,108 +1924,33 @@ function normalizeTranslatedParagraphs(translated, original) {
   return [...translated, ...Array.from({ length: original.length - translated.length }, () => "")];
 }
 
-function parseFreeGoogleResponse(data) {
-  if (!Array.isArray(data?.[0])) {
-    throw new Error("免费翻译返回格式不正确。");
-  }
 
-  return data[0].map((item) => item?.[0] || "").join("");
-}
-
-function splitTextForFreeApi(text, maxLength) {
-  if (text.length <= maxLength) {
-    return [text];
-  }
-
-  const pieces = [];
-  let remaining = text;
-
-  while (remaining.length > maxLength) {
-    const slice = remaining.slice(0, maxLength);
-    const breakPoint = Math.max(
-      slice.lastIndexOf("。"),
-      slice.lastIndexOf("！"),
-      slice.lastIndexOf("？"),
-      slice.lastIndexOf("."),
-      slice.lastIndexOf("!"),
-      slice.lastIndexOf("?"),
-      slice.lastIndexOf("；"),
-      slice.lastIndexOf(";"),
-      slice.lastIndexOf("，"),
-      slice.lastIndexOf(","),
-      slice.lastIndexOf(" ")
-    );
-    const end = breakPoint > 80 ? breakPoint + 1 : maxLength;
-    pieces.push(remaining.slice(0, end));
-    remaining = remaining.slice(end);
-  }
-
-  if (remaining) {
-    pieces.push(remaining);
-  }
-
-  return pieces;
-}
-
-function getCurrentTranslation() {
-  return state.translations[getTranslationKey()];
-}
-
-function getTranslationForChapter(chapterIndex) {
-  return state.translations[getTranslationKey(chapterIndex)];
-}
-
-function getTranslationKey(chapterIndex = state.currentChapterIndex) {
-  const translator = state.translator;
-  return [
-    chapterIndex,
-    translator.provider,
-    translator.source,
-    translator.target,
-    translator.provider === "model" ? translator.endpoint : translator.provider,
-    translator.provider === "model" ? translator.model : "",
-  ].join("::");
-}
-
+// 清除当前可见内容的内存译文，重新触发一次翻译（IndexedDB 缓存仍在，
+// 除非换了模型/目标语言，否则重译会直接命中缓存不花额度）
 function clearCurrentTranslation() {
-  if (isParallelTranslationEnabled()) {
-    clearVisibleSentenceTranslations();
+  if (isFidelityActive() && fidelity.type === "epub") {
+    applyFidelityTranslation(true);
+    setTranslatorStatus("已刷新当前章节译文。", "success");
     return;
   }
-
-  const progress = getScrollProgress();
-  delete state.translations[getTranslationKey()];
-  if (state.translator.view !== "original") {
-    state.translator.view = "original";
-  }
-  saveState();
-  applyTranslatorSettings();
-  renderReader();
-  restoreScroll(progress * Math.max(1, dom.reader.scrollHeight - dom.reader.clientHeight));
-  updateButtons();
-  setTranslatorStatus("当前配置下的译文已清除。", "success");
-}
-
-function clearVisibleSentenceTranslations() {
-  dom.reader
-    .querySelectorAll('.sentence-piece[data-side="translated"]')
-    .forEach((piece) => {
-      const key = piece.dataset.cacheKey;
-      if (key) sentenceTranslationMemory.delete(key);
-      updateSentencePiece(piece, "翻译中...", "loading");
-    });
-  setTranslatorStatus("已清除当前可见段的内存译文；IndexedDB 缓存会继续避免重复消耗。", "success");
+  dom.reader.querySelectorAll(".rt-para").forEach((wrap) => {
+    const key = wrap.dataset.transKey;
+    if (key) sentenceTranslationMemory.delete(key);
+    const transEl = wrap.querySelector(".rt-trans");
+    if (transEl) {
+      transEl.textContent = "翻译中…";
+      transEl.dataset.status = "pending";
+    }
+  });
+  const windowNode = dom.reader.querySelector(".virtual-window");
+  if (windowNode) hydrateVisibleTranslations(windowNode);
+  setTranslatorStatus("已刷新当前可见内容的译文。", "success");
 }
 
 function openTranslatorPanel() {
   state.translator.panelOpen = true;
   applyTranslatorSettings();
   saveState();
-}
-
-function setTranslatorBusy(isBusy) {
-  dom.translateChapter.disabled = isBusy || !state.chapters.length;
-  dom.translateChapter.textContent = isBusy ? "翻译中..." : "翻译当前章";
 }
 
 function setTranslatorStatus(message, type = "") {
@@ -2593,11 +1977,7 @@ function getTranslateErrorMessage(error) {
   const message = error instanceof Error ? error.message : String(error);
 
   if (message.toLowerCase().includes("failed to fetch")) {
-    if (state.translator.provider === "free") {
-      return "免费翻译请求失败。已尝试免费公共接口，可能是网络不可用或接口临时受限，可以稍后重试，或切换到谷歌 API / 模型翻译。";
-    }
-
-    return "请求失败。可能是接口地址不正确、网络不可用，或该服务不允许浏览器直接跨域调用。";
+    return "请求失败。可能是 Base URL 不正确、网络不可用，或该服务不允许浏览器直接跨域调用。";
   }
 
   return `翻译失败：${message}`;
@@ -2817,83 +2197,6 @@ function revealToolbarOnTap() {
   if (dom.shell.classList.contains("toolbar-hidden")) {
     dom.shell.classList.remove("toolbar-hidden");
   }
-}
-
-// ============ 双栏翻译模式：点击/选中 → 高亮对侧句子 ============
-
-// 点击任一句 piece：在哪一侧点，就把对侧同 cacheKey 的句子高亮；
-// 同一侧再点取消；点不同句切换
-function handleSentencePairFocus(event) {
-  if (!isParallelTranslationEnabled()) return;
-  // 用户正在拖选文本时交给 mouseup 处理，这里跳过
-  const selection = window.getSelection?.();
-  if (selection && !selection.isCollapsed && String(selection).length > 0) {
-    return;
-  }
-  if (event.target.closest(".parallel-divider")) return;
-
-  const piece = event.target.closest(".sentence-piece");
-  if (!piece || !dom.reader.contains(piece)) return;
-
-  const key = piece.dataset.cacheKey || "";
-  const targetSide = getOppositeSide(piece.dataset.side);
-  if (!key || !targetSide) return;
-
-  if (focusedSentenceKey === key && focusedSentenceSide === targetSide) {
-    focusedSentenceKey = null;
-    focusedSentenceSide = null;
-  } else {
-    focusedSentenceKey = key;
-    focusedSentenceSide = targetSide;
-  }
-  applySentenceFocus();
-}
-
-// 鼠标拖选文本结束：在哪一侧选，就高亮对侧同 cacheKey 的句子
-function handleSelectionFocus() {
-  if (!isParallelTranslationEnabled()) return;
-  const selection = window.getSelection?.();
-  if (!selection || selection.isCollapsed) return;
-  if (!String(selection).trim()) return;
-
-  const anchorPiece = findSentencePieceFromNode(selection.anchorNode);
-  const focusPiece = findSentencePieceFromNode(selection.focusNode);
-  // 选区跨多个 piece 时不切换焦点，避免误判
-  if (!anchorPiece || anchorPiece !== focusPiece) return;
-
-  const key = anchorPiece.dataset.cacheKey || "";
-  const targetSide = getOppositeSide(anchorPiece.dataset.side);
-  if (!key || !targetSide) return;
-
-  if (focusedSentenceKey !== key || focusedSentenceSide !== targetSide) {
-    focusedSentenceKey = key;
-    focusedSentenceSide = targetSide;
-    applySentenceFocus();
-  }
-}
-
-// 同步 piece 级 .is-piece-focused：只有命中 cacheKey + side 的 span 被高亮
-function applySentenceFocus() {
-  dom.reader.querySelectorAll(".sentence-piece").forEach((piece) => {
-    const isTarget =
-      Boolean(focusedSentenceKey) &&
-      piece.dataset.cacheKey === focusedSentenceKey &&
-      piece.dataset.side === focusedSentenceSide;
-    piece.classList.toggle("is-piece-focused", isTarget);
-  });
-}
-
-function getOppositeSide(side) {
-  if (side === "original") return "translated";
-  if (side === "translated") return "original";
-  return null;
-}
-
-// 从 Selection 端点节点向上找到所在的 .sentence-piece
-function findSentencePieceFromNode(node) {
-  if (!node) return null;
-  const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-  return el?.closest?.(".sentence-piece") || null;
 }
 
 // ============ 选中正文中的英文 → 弹出查词弹窗 ============
@@ -4378,19 +3681,23 @@ function formatSize(size) {
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    const savedTranslator = saved?.translator || {};
+    // 只保留新模型需要的字段，旧的 provider/view/parallelMode/swapColumns 一律丢弃
     const translator = {
       ...defaultState.translator,
-      ...(saved?.translator || {}),
+      panelOpen: false,
+      apiKey: savedTranslator.apiKey || "",
+      // 旧版若停在谷歌翻译端点，迁移回默认的 OpenAI 兼容端点
+      endpoint:
+        savedTranslator.endpoint && savedTranslator.endpoint !== GOOGLE_TRANSLATE_ENDPOINT
+          ? savedTranslator.endpoint
+          : defaultState.translator.endpoint,
+      model: savedTranslator.provider && savedTranslator.provider !== "model" ? "" : savedTranslator.model || "",
+      target: savedTranslator.target || defaultState.translator.target,
+      chunkSize: Number(savedTranslator.chunkSize) || defaultState.translator.chunkSize,
+      // 旧版「双栏/译文/双语」视为开启过翻译，迁移成新的 enabled
+      enabled: Boolean(savedTranslator.parallelMode || (savedTranslator.view && savedTranslator.view !== "original")),
     };
-
-    if (!saved?.translator?.provider || (translator.provider === "google" && !translator.apiKey)) {
-      translator.provider = "free";
-      translator.endpoint = translator.endpoint || defaultState.translator.endpoint;
-      translator.model = "";
-    }
-
-    translator.endpoint = translator.endpoint || defaultState.translator.endpoint;
-    translator.parallelMode = Boolean(translator.parallelMode || translator.view === "parallel");
 
     // 向后兼容：Phase 1 之前导入的书没有 SHA-256 id，给它一个根据
     // fileName+size 的同步 fallback，保证书签 / 列表 / 进度 API 都能正常找到 bookId。
@@ -4742,6 +4049,9 @@ async function openFidelityEpub(bytes) {
       },
       true
     );
+    // 段下译文：给 iframe 注入译文样式；翻译开着就翻这一节
+    injectFidelityTransStyle(doc);
+    if (isTranslationOn()) translateSectionDoc(doc);
   });
 
   applyFidelityEpubTheme();
@@ -4874,6 +4184,88 @@ function applyFidelityEpubTheme() {
     img: { "max-width": "100% !important", height: "auto !important" },
   });
   fidelity.rendition.themes.fontSize(`${fontSize}px`);
+}
+
+// ---- EPUB 段下译文：往 section iframe 的 DOM 里插译文（同源可直接改） ----
+
+// 译文样式得注入到 iframe 文档自身，父页样式表管不到 iframe 内部
+function injectFidelityTransStyle(doc) {
+  if (!doc || doc.getElementById("rt-trans-style")) return;
+  const shellStyle = getComputedStyle(dom.shell);
+  const accent = shellStyle.getPropertyValue("--accent-strong").trim() || "#1d5148";
+  const muted = shellStyle.getPropertyValue("--muted").trim() || "#706b5e";
+  const style = doc.createElement("style");
+  style.id = "rt-trans-style";
+  style.textContent = `
+    .rt-trans{margin:.3em 0 1em;padding-left:.7em;border-left:2px solid ${accent}55;
+      color:${accent};font-size:.96em;line-height:1.6;}
+    .rt-trans[data-status="pending"],.rt-trans[data-status="loading"]{color:${muted};font-style:italic;}
+  `;
+  doc.head?.appendChild(style);
+}
+
+// 选出可翻译的叶子块（不含嵌套块、有实际文字的段落/标题/列表项/引用）
+function collectFidelityBlocks(doc) {
+  return [...doc.body.querySelectorAll("p, li, blockquote, h1, h2, h3, h4, h5, h6")].filter(
+    (el) => !el.querySelector("p, li, blockquote") && el.textContent.trim().length > 1
+  );
+}
+
+function removeFidelityTranslations(doc) {
+  doc.querySelectorAll(".rt-trans").forEach((el) => el.remove());
+}
+
+// 翻译某一节文档：每个原文块后插入 .rt-trans，先占位再异步回填
+async function translateSectionDoc(doc) {
+  if (!doc?.body || !isTranslationOn()) return;
+  const pending = collectFidelityBlocks(doc).filter(
+    (el) => !el.nextElementSibling?.classList?.contains("rt-trans")
+  );
+  if (!pending.length) return;
+
+  pending.forEach((el) => {
+    const ph = doc.createElement("div");
+    ph.className = "rt-trans";
+    ph.dataset.status = "loading";
+    ph.textContent = "翻译中…";
+    el.after(ph);
+  });
+
+  try {
+    const translations = await translateBlocks(pending.map((el) => el.textContent.trim()));
+    pending.forEach((el, i) => {
+      const t = el.nextElementSibling;
+      if (t?.classList.contains("rt-trans")) {
+        t.textContent = translations[i] || "";
+        t.dataset.status = "ready";
+      }
+    });
+  } catch (error) {
+    const message = getTranslateErrorMessage(error);
+    pending.forEach((el) => {
+      const t = el.nextElementSibling;
+      if (t?.classList.contains("rt-trans")) {
+        t.textContent = message;
+        t.dataset.status = "error";
+      }
+    });
+  }
+}
+
+// 开关 / 重译时，处理当前已渲染的 EPUB section iframe
+function applyFidelityTranslation(force = false) {
+  if (fidelity.type !== "epub") return;
+  dom.fidelityReader.querySelectorAll("iframe").forEach((frame) => {
+    const doc = frame.contentDocument;
+    if (!doc?.body) return;
+    if (!isTranslationOn()) {
+      removeFidelityTranslations(doc);
+      return;
+    }
+    if (force) removeFidelityTranslations(doc);
+    injectFidelityTransStyle(doc);
+    translateSectionDoc(doc);
+  });
 }
 
 // ---- PDF：按页 canvas 渲染，IntersectionObserver 懒加载 ----

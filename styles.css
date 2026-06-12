@@ -814,6 +814,35 @@ button:active,
   text-indent: 0;
 }
 
+/* 文本模式段下译文：原文段 + 译文段包在 .rt-para 里 */
+.reader-content .rt-para {
+  margin: 0 0 1.08em;
+}
+
+.reader-content .rt-para .original-paragraph {
+  margin-bottom: 0.2em;
+}
+
+.reader-content .rt-para .rt-trans {
+  margin: 0;
+  padding-left: 0.8em;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 36%, transparent);
+  color: color-mix(in srgb, var(--reader-ink) 70%, var(--accent));
+  font-size: calc(var(--read-font-size, 20px) * 0.94);
+  text-indent: 0;
+}
+
+.reader-content .rt-para .rt-trans[data-status="pending"],
+.reader-content .rt-para .rt-trans[data-status="loading"] {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.reader-content .rt-para .rt-trans[data-status="error"] {
+  color: #a83c2f;
+  font-style: normal;
+}
+
 .sentence-pair {
   display: grid;
   /* 閫氳繃 --parallel-ratio 鍙橀噺鍔ㄦ€佹帶鍒跺乏鍙虫爮瀹藉害锛涗腑闂?24px 鐣欑粰鍒嗙晫绾胯瑙夐棿璺?*/
