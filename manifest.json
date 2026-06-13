@@ -1,13 +1,13 @@
 {
   "name": "ReadTaylor 阅读器",
   "short_name": "ReadTaylor",
-  "description": "支持 TXT、EPUB、PDF 的本地小说阅读器，可翻译、朗读、做标记。",
+  "description": "移动端本地阅读器，不提供书籍内容，用户需上传自己的 TXT、EPUB 或 PDF 文件。",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#edf0ea",
-  "theme_color": "#edf0ea",
+  "background_color": "#f4f2ec",
+  "theme_color": "#f4f2ec",
   "icons": [
     {
       "src": "icon.svg",
