@@ -175,11 +175,16 @@ async function pdfToText(file: File): Promise<string> {
   return linesToProse(allLines);
 }
 
-function buildBook(title: string, fileType: string, chapters: Chapter[]): Book {
+function buildBook(
+  title: string,
+  fileType: string,
+  chapters: Chapter[],
+  author = "本地上传"
+): Book {
   return {
     id: uid(),
     title,
-    author: "本地上传",
+    author,
     fileType,
     color: coverColor(title),
     chapters,
@@ -187,6 +192,105 @@ function buildBook(title: string, fileType: string, chapters: Chapter[]): Book {
     lastChapter: 0,
     addedAt: Date.now(),
   };
+}
+
+// 把相对路径基于 baseDir 归一化为 zip 内的完整路径（去掉锚点 #...）
+function resolvePath(baseDir: string, rel: string): string {
+  const cleaned = decodeURIComponent(rel.split("#")[0]);
+  const parts = (baseDir ? baseDir.split("/") : []).concat(cleaned.split("/"));
+  const out: string[] = [];
+  for (const p of parts) {
+    if (p === "" || p === ".") continue;
+    if (p === "..") out.pop();
+    else out.push(p);
+  }
+  return out.join("/");
+}
+
+function dirOf(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i < 0 ? "" : path.slice(0, i);
+}
+
+function localTags(root: Element | Document, local: string): Element[] {
+  return Array.from(root.getElementsByTagName("*")).filter((e) => e.localName === local);
+}
+
+async function epubToBook(file: File, fallbackTitle: string): Promise<AddResult> {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+
+  const read = async (path: string): Promise<string> => {
+    const entry = zip.file(path);
+    return entry ? entry.async("text") : "";
+  };
+  const parser = new DOMParser();
+
+  // 1. 通过 container.xml 找到 OPF
+  const container = parser.parseFromString(await read("META-INF/container.xml"), "application/xml");
+  const opfPath = container.querySelector("rootfile")?.getAttribute("full-path");
+  if (!opfPath) return { error: "EPUB 结构异常：找不到 OPF 清单。" };
+  const opfDir = dirOf(opfPath);
+
+  // 2. 解析 OPF：元数据 + manifest + spine
+  const opf = parser.parseFromString(await read(opfPath), "application/xml");
+  const bookTitle = localTags(opf, "title")[0]?.textContent?.trim() || fallbackTitle;
+  const author = localTags(opf, "creator")[0]?.textContent?.trim() || "本地上传";
+
+  const hrefById: Record<string, string> = {};
+  let navHref = "";
+  for (const item of localTags(opf, "item")) {
+    const id = item.getAttribute("id") || "";
+    const href = item.getAttribute("href") || "";
+    hrefById[id] = href;
+    if ((item.getAttribute("properties") || "").split(/\s+/).includes("nav")) navHref = href;
+  }
+  const spine = localTags(opf, "itemref")
+    .map((ref) => ref.getAttribute("idref") || "")
+    .map((id) => hrefById[id])
+    .filter(Boolean);
+
+  // 3. 目录标题：href(完整路径) → 章节名
+  const tocMap: Record<string, string> = {};
+  if (navHref) {
+    const navPath = resolvePath(opfDir, navHref);
+    const nav = parser.parseFromString(await read(navPath), "text/html");
+    nav.querySelectorAll("a[href]").forEach((a) => {
+      const label = a.textContent?.replace(/\s+/g, " ").trim();
+      const href = a.getAttribute("href") || "";
+      if (label) tocMap[resolvePath(dirOf(navPath), href)] = label;
+    });
+  }
+
+  // 4. 逐个 spine 文件抽取正文
+  const chapters: Chapter[] = [];
+  for (let i = 0; i < spine.length; i++) {
+    const path = resolvePath(opfDir, spine[i]);
+    const html = await read(path);
+    if (!html) continue;
+    const doc = parser.parseFromString(html, "text/html");
+    const body = doc.body || doc.documentElement;
+
+    const blocks = Array.from(body.querySelectorAll("h1,h2,h3,h4,h5,h6,p,blockquote"));
+    const firstHeading = blocks.find((b) => /^h[1-6]$/i.test(b.tagName));
+    let title = tocMap[path] || firstHeading?.textContent?.replace(/\s+/g, " ").trim() || "";
+
+    const paras: string[] = [];
+    for (const b of blocks) {
+      if (b === firstHeading) continue; // 标题不重复进正文
+      const t = b.textContent?.replace(/\s+/g, " ").trim();
+      if (t) paras.push(t);
+    }
+    let content = paras.join("\n\n");
+    if (!content) content = toParagraphs(body.textContent || ""); // 兜底：div 排版等
+    if (!content) continue; // 纯封面/空页跳过
+
+    if (!title) title = `第 ${chapters.length + 1} 章`;
+    chapters.push({ id: `c${i}`, title, content });
+  }
+
+  if (chapters.length === 0) return { error: "无法从这个 EPUB 提取到正文。" };
+  return { book: buildBook(bookTitle, "EPUB", chapters, author) };
 }
 
 export interface AddResult {
@@ -217,8 +321,17 @@ export async function bookFromFile(file: File): Promise<AddResult> {
     }
   }
 
+  if (ext === "epub" || file.type === "application/epub+zip") {
+    try {
+      return await epubToBook(file, baseName);
+    } catch (e) {
+      console.error("EPUB 解析失败", e);
+      return { error: "EPUB 解析失败，文件可能已损坏或带 DRM 加密。" };
+    }
+  }
+
   return {
-    error: `${ext.toUpperCase() || "该格式"} 解析将在下一步接入，目前支持 TXT / MD / PDF`,
+    error: `${ext.toUpperCase() || "该格式"} 暂不支持，目前支持 TXT / MD / PDF / EPUB`,
   };
 }
 
