@@ -118,6 +118,77 @@ export function parseTextToChapters(text: string, fallbackTitle: string): Chapte
   return chapters;
 }
 
+// 把 PDF 抽取出的「视觉行」重新拼成段落：
+// 句末标点收尾的行 → 段落结束；章节标题行单独成段，便于后续切章。
+function linesToProse(lines: string[]): string {
+  const enders = /[。！？…”』》】.!?]["'’”]?$/;
+  const paras: string[] = [];
+  let cur = "";
+  const flush = () => {
+    if (cur.trim()) paras.push(cur.trim());
+    cur = "";
+  };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      flush();
+      continue;
+    }
+    if (isHeading(line)) {
+      flush();
+      paras.push(line);
+      continue;
+    }
+    // 拉丁文之间补空格，中文直接相接
+    cur += cur && /[a-zA-Z0-9,;:]$/.test(cur) ? " " + line : line;
+    if (enders.test(line)) flush();
+  }
+  flush();
+  return paras.join("\n\n");
+}
+
+async function pdfToText(file: File): Promise<string> {
+  const pdfjs = await import("pdfjs-dist");
+  const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
+  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+
+  const data = await file.arrayBuffer();
+  const doc = await pdfjs.getDocument({ data }).promise;
+  const allLines: string[] = [];
+
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p);
+    const content = await page.getTextContent();
+    let line = "";
+    for (const item of content.items as Array<{ str: string; hasEOL?: boolean }>) {
+      line += item.str;
+      if (item.hasEOL) {
+        allLines.push(line);
+        line = "";
+      }
+    }
+    if (line) allLines.push(line);
+    allLines.push(""); // 翻页留空行
+    page.cleanup();
+  }
+  doc.destroy();
+  return linesToProse(allLines);
+}
+
+function buildBook(title: string, fileType: string, chapters: Chapter[]): Book {
+  return {
+    id: uid(),
+    title,
+    author: "本地上传",
+    fileType,
+    color: coverColor(title),
+    chapters,
+    progress: 0,
+    lastChapter: 0,
+    addedAt: Date.now(),
+  };
+}
+
 export interface AddResult {
   book?: Book;
   error?: string;
@@ -128,26 +199,27 @@ export async function bookFromFile(file: File): Promise<AddResult> {
   const ext = (file.name.split(".").pop() || "").toLowerCase();
   const isText = ext === "txt" || ext === "md" || file.type.startsWith("text/");
 
-  if (!isText) {
-    return {
-      error: `${ext.toUpperCase() || "该格式"} 解析将在下一步接入，目前支持 TXT / MD`,
-    };
+  if (isText) {
+    const text = await file.text();
+    return { book: buildBook(baseName, ext.toUpperCase() || "TXT", parseTextToChapters(text, baseName)) };
   }
 
-  const text = await file.text();
-  const chapters = parseTextToChapters(text, baseName);
-  const book: Book = {
-    id: uid(),
-    title: baseName,
-    author: "本地上传",
-    fileType: ext.toUpperCase() || "TXT",
-    color: coverColor(baseName),
-    chapters,
-    progress: 0,
-    lastChapter: 0,
-    addedAt: Date.now(),
+  if (ext === "pdf" || file.type === "application/pdf") {
+    try {
+      const text = await pdfToText(file);
+      if (!text.trim()) {
+        return { error: "这个 PDF 没有可提取的文字（可能是扫描图片版），暂时无法阅读。" };
+      }
+      return { book: buildBook(baseName, "PDF", parseTextToChapters(text, baseName)) };
+    } catch (e) {
+      console.error("PDF 解析失败", e);
+      return { error: "PDF 解析失败，文件可能已加密或损坏。" };
+    }
+  }
+
+  return {
+    error: `${ext.toUpperCase() || "该格式"} 解析将在下一步接入，目前支持 TXT / MD / PDF`,
   };
-  return { book };
 }
 
 export function loadBooks(): Book[] {

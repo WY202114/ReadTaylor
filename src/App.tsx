@@ -50,6 +50,12 @@ export default function App() {
     toastTimer.current = window.setTimeout(() => setToast(""), 2400);
   };
 
+  // 不会自动消失的提示（用于「解析中…」这类需要等待的场景）
+  const stick = (msg: string) => {
+    window.clearTimeout(toastTimer.current);
+    setToast(msg);
+  };
+
   const filteredBooks = books.filter(
     (b) => b.title.includes(searchQuery) || b.author.includes(searchQuery)
   );
@@ -62,6 +68,8 @@ export default function App() {
     const file = e.target.files?.[0];
     e.target.value = ""; // 允许重复选同一文件
     if (!file) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (ext === "pdf") stick("正在解析 PDF，较大文件需要几秒…");
     const { book, error } = await bookFromFile(file);
     if (error) {
       flash(error);
@@ -192,7 +200,7 @@ export default function App() {
                         书架还是空的
                       </h2>
                       <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", lineHeight: 1.7, color: "var(--muted-foreground)", margin: "0 0 24px", maxWidth: "260px" }}>
-                        ReadTaylor 不提供任何书籍内容。上传你自己的 TXT / MD 文件，它只在你的浏览器本地打开。
+                        ReadTaylor 不提供任何书籍内容。上传你自己的 TXT / MD / PDF 文件，它只在你的浏览器本地打开。
                       </p>
                       <button
                         onClick={pickFile}
@@ -328,7 +336,7 @@ export default function App() {
 
                 <div style={{ borderRadius: "16px", overflow: "hidden", border: "1px solid var(--border)" }}>
                   {[
-                    { label: "上传新书", value: "TXT / MD", action: pickFile },
+                    { label: "上传新书", value: "TXT / MD / PDF", action: pickFile },
                     { label: "夜间模式", value: isDark ? "已开启" : "已关闭", action: () => setIsDark((d) => !d) },
                     { label: "关于应用", value: `v${APP_VERSION}`, action: undefined },
                   ].map((item, i) => (
