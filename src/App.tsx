@@ -18,7 +18,7 @@ import {
 import { bookFromFile, loadBooks, saveBooks, type Book } from "./lib/books";
 import { delFile } from "./lib/filestore";
 
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 
 type Tab = "library" | "profile";
 

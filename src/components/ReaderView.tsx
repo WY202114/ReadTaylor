@@ -160,6 +160,24 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         </button>
       </div>
 
+      {/* 旧版导入的 EPUB（纯文本、无原始文件）提示重新上传 */}
+      {!isFidelity && book.fileType === "EPUB" && (
+        <div
+          style={{
+            padding: "8px 16px",
+            background: "var(--secondary)",
+            borderBottom: "1px solid var(--border)",
+            fontFamily: "Inter, sans-serif",
+            fontSize: "12px",
+            lineHeight: 1.5,
+            color: "var(--muted-foreground)",
+            textAlign: "center",
+          }}
+        >
+          这本书是旧版导入的纯文本。删除后重新上传即可「原版显示」。
+        </div>
+      )}
+
       {/* Content — 原版（EPUB iframe）或文本模式 */}
       {isFidelity ? (
         <div className="flex-1 flex flex-col overflow-hidden">
