@@ -1,22 +1,25 @@
 // 本地书库：所有书籍来自用户上传的文件，只存在浏览器本地。
 // ReadTaylor 不内置任何书籍内容。
+import { putFile } from "./filestore";
 
 export interface Chapter {
   id: string;
   title: string;
-  content: string; // 段落之间用 \n\n 分隔
+  content: string; // 文本模式：段落之间用 \n\n 分隔；原版模式可为空
+  href?: string; // 原版模式：章节在 EPUB 包内的完整路径
 }
 
 export interface Book {
   id: string;
   title: string;
   author: string;
-  fileType: string; // TXT / MD ...
+  fileType: string; // TXT / MD / PDF / EPUB
   color: string; // 生成的封面底色
   chapters: Chapter[];
   progress: number; // 0-100
   lastChapter: number;
   addedAt: number;
+  mode?: "text" | "fidelity"; // 缺省按 text 处理；EPUB 为 fidelity（原版渲染）
 }
 
 const STORAGE_KEY = "readtaylor.books.v1";
@@ -262,35 +265,32 @@ async function epubToBook(file: File, fallbackTitle: string): Promise<AddResult>
     });
   }
 
-  // 4. 逐个 spine 文件抽取正文
+  // 4. 逐个 spine 文件确定章节标题（原版模式：正文由 iframe 直接渲染原 HTML，
+  //    此处只取标题，path 存入 chapter.href）
   const chapters: Chapter[] = [];
   for (let i = 0; i < spine.length; i++) {
     const path = resolvePath(opfDir, spine[i]);
     const html = await read(path);
     if (!html) continue;
-    const doc = parser.parseFromString(html, "text/html");
-    const body = doc.body || doc.documentElement;
-
-    const blocks = Array.from(body.querySelectorAll("h1,h2,h3,h4,h5,h6,p,blockquote"));
-    const firstHeading = blocks.find((b) => /^h[1-6]$/i.test(b.tagName));
-    let title = tocMap[path] || firstHeading?.textContent?.replace(/\s+/g, " ").trim() || "";
-
-    const paras: string[] = [];
-    for (const b of blocks) {
-      if (b === firstHeading) continue; // 标题不重复进正文
-      const t = b.textContent?.replace(/\s+/g, " ").trim();
-      if (t) paras.push(t);
+    let title = tocMap[path];
+    if (!title) {
+      const doc = parser.parseFromString(html, "text/html");
+      const heading = doc.querySelector("h1,h2,h3,h4,h5,h6");
+      title =
+        heading?.textContent?.replace(/\s+/g, " ").trim() ||
+        doc.title?.trim() ||
+        `第 ${chapters.length + 1} 章`;
     }
-    let content = paras.join("\n\n");
-    if (!content) content = toParagraphs(body.textContent || ""); // 兜底：div 排版等
-    if (!content) continue; // 纯封面/空页跳过
-
-    if (!title) title = `第 ${chapters.length + 1} 章`;
-    chapters.push({ id: `c${i}`, title, content });
+    chapters.push({ id: `c${i}`, title, content: "", href: path });
   }
 
-  if (chapters.length === 0) return { error: "无法从这个 EPUB 提取到正文。" };
-  return { book: buildBook(bookTitle, "EPUB", chapters, author) };
+  if (chapters.length === 0) return { error: "无法从这个 EPUB 解析出章节。" };
+
+  const book = buildBook(bookTitle, "EPUB", chapters, author);
+  book.mode = "fidelity";
+  // 原始文件存入 IndexedDB，供原版渲染反复读取
+  await putFile(book.id, file);
+  return { book };
 }
 
 export interface AddResult {

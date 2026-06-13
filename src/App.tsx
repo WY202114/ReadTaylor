@@ -16,6 +16,7 @@ import {
   FileText,
 } from "lucide-react";
 import { bookFromFile, loadBooks, saveBooks, type Book } from "./lib/books";
+import { delFile } from "./lib/filestore";
 
 const APP_VERSION = "2.0.0";
 
@@ -92,6 +93,7 @@ export default function App() {
   const deleteBook = (id: string, title: string) => {
     if (!window.confirm(`从书架移除《${title}》？文件本就只在本地，移除后需重新上传。`)) return;
     setBooks((prev) => prev.filter((b) => b.id !== id));
+    delFile(id); // 清掉 IndexedDB 里的原始文件（EPUB 原版渲染用）
   };
 
   const openBook = (book: Book) => setReadingBook(book);
