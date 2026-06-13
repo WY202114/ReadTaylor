@@ -2,15 +2,15 @@
   "name": "ReadTaylor 阅读器",
   "short_name": "ReadTaylor",
   "description": "移动端本地阅读器，不提供书籍内容，用户需上传自己的 TXT、EPUB 或 PDF 文件。",
-  "start_url": "./",
-  "scope": "./",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#f4f2ec",
-  "theme_color": "#f4f2ec",
+  "background_color": "#f5f0e8",
+  "theme_color": "#f5f0e8",
   "icons": [
     {
-      "src": "icon.svg",
+      "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

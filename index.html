@@ -6,20 +6,19 @@
     <title>ReadTaylor</title>
     <meta
       name="description"
-      content="ReadTaylor 是一个移动端本地阅读器外观原型，不提供书籍内容，用户需上传自己的 TXT、EPUB 或 PDF 文件。"
+      content="ReadTaylor 是一个移动端本地阅读器，不提供书籍内容，用户需上传自己的 TXT、EPUB 或 PDF 文件。"
     />
-    <meta name="theme-color" content="#f4f2ec" />
-    <link rel="manifest" href="manifest.json" />
+    <meta name="theme-color" content="#f5f0e8" />
+    <link rel="manifest" href="/manifest.json" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="ReadTaylor" />
-    <link rel="apple-touch-icon" href="icon.svg" />
-    <link rel="icon" href="icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=2026061302" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   </head>
   <body>
-    <main id="app"></main>
-    <script src="app.js?v=2026061302"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
