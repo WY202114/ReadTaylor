@@ -5,7 +5,6 @@ import { BookCover } from "./components/BookCover";
 import {
   BookOpen,
   Search,
-  Bookmark,
   User,
   Sun,
   Moon,
@@ -20,7 +19,7 @@ import { bookFromFile, loadBooks, saveBooks, type Book } from "./lib/books";
 
 const APP_VERSION = "2.0.0";
 
-type Tab = "library" | "bookmarks" | "profile";
+type Tab = "library" | "profile";
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -103,11 +102,8 @@ export default function App() {
 
   if (readingBook) {
     return (
-      <div
-        className={isDark ? "dark" : ""}
-        style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", background: isDark ? "#0f0d0b" : "#e8e0d5" }}
-      >
-        <div style={{ width: "390px", height: "844px", maxWidth: "100vw", maxHeight: "100vh", borderRadius: "40px", overflow: "hidden", boxShadow: "0 40px 80px rgba(0,0,0,0.25)", position: "relative" }}>
+      <div className={isDark ? "dark" : ""} style={{ background: "var(--background)" }}>
+        <div style={{ width: "100%", height: "100dvh", overflow: "hidden", position: "relative" }}>
           <ReaderView
             book={readingBook}
             onBack={closeReader}
@@ -122,7 +118,15 @@ export default function App() {
   return (
     <div
       className={isDark ? "dark" : ""}
-      style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", background: isDark ? "#0f0d0b" : "#e8e0d5" }}
+      style={{
+        width: "100%",
+        height: "100dvh",
+        background: "var(--background)",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        position: "relative",
+      }}
     >
       <input
         ref={fileInputRef}
@@ -132,33 +136,9 @@ export default function App() {
         onChange={onFileChange}
       />
 
-      {/* Mobile frame */}
-      <div
-        style={{
-          width: "390px",
-          height: "844px",
-          maxWidth: "100vw",
-          maxHeight: "100vh",
-          background: "var(--background)",
-          borderRadius: "40px",
-          boxShadow: "0 40px 80px rgba(0,0,0,0.25)",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          position: "relative",
-        }}
-      >
-        {/* Status bar */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 32px 8px", fontFamily: "Inter, sans-serif", fontSize: "13px", fontWeight: 600, color: "var(--foreground)" }}>
-          <span>9:41</span>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <div style={{ width: "16px", height: "10px", border: "1.5px solid currentColor", borderRadius: "2px", opacity: 0.7, display: "flex", alignItems: "center", padding: "1px" }}>
-              <div style={{ height: "6px", background: "currentColor", borderRadius: "1px", width: "70%" }} />
-            </div>
-          </div>
-        </div>
+      <div style={{ height: "max(env(safe-area-inset-top), 12px)" }} />
 
-        {/* Content */}
+      {/* Content */}
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
           <AnimatePresence mode="wait">
             {activeTab === "library" && (
@@ -322,73 +302,6 @@ export default function App() {
               </motion.div>
             )}
 
-            {activeTab === "bookmarks" && (
-              <motion.div
-                key="bookmarks"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2 }}
-                style={{ flex: 1, overflowY: "auto", padding: "16px 24px", scrollbarWidth: "none" }}
-              >
-                <h1 style={{ fontFamily: "Lora, serif", fontSize: "24px", fontWeight: 600, color: "var(--foreground)", marginBottom: "20px" }}>书签</h1>
-
-                {readingBooks.length === 0 && finishedBooks.length === 0 ? (
-                  <div style={{ textAlign: "center", padding: "48px 0" }}>
-                    <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", color: "var(--muted-foreground)" }}>
-                      开始阅读后，书会出现在这里。
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    {readingBooks.length > 0 && (
-                      <div style={{ marginBottom: "24px" }}>
-                        <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", color: "var(--muted-foreground)", marginBottom: "12px" }}>阅读中</p>
-                        {readingBooks.map((book) => (
-                          <button
-                            key={book.id}
-                            onClick={() => openBook(book)}
-                            style={{ width: "100%", display: "flex", alignItems: "center", gap: "16px", padding: "16px 0", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--border)", cursor: "pointer" }}
-                          >
-                            <BookCover book={book} style={{ width: "48px", height: "64px", borderRadius: "10px", flexShrink: 0 }} />
-                            <div style={{ flex: 1 }}>
-                              <p style={{ fontFamily: "Lora, serif", fontSize: "15px", color: "var(--foreground)", margin: 0 }}>{book.title}</p>
-                              <p style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", color: "var(--muted-foreground)", margin: "2px 0 0" }}>{book.author}</p>
-                              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "8px" }}>
-                                <div style={{ flex: 1, height: "4px", borderRadius: "2px", background: "var(--secondary)" }}>
-                                  <div style={{ width: `${book.progress}%`, height: "100%", borderRadius: "2px", background: "var(--accent)" }} />
-                                </div>
-                                <span style={{ fontFamily: "Inter, sans-serif", fontSize: "11px", color: "var(--accent)" }}>{book.progress}%</span>
-                              </div>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-
-                    {finishedBooks.length > 0 && (
-                      <div>
-                        <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", color: "var(--muted-foreground)", marginBottom: "12px" }}>已读完</p>
-                        {finishedBooks.map((book) => (
-                          <button
-                            key={book.id}
-                            onClick={() => openBook(book)}
-                            style={{ width: "100%", display: "flex", alignItems: "center", gap: "16px", padding: "16px 0", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--border)", cursor: "pointer" }}
-                          >
-                            <BookCover book={book} dimmed style={{ width: "48px", height: "64px", borderRadius: "10px", flexShrink: 0 }} />
-                            <div style={{ flex: 1 }}>
-                              <p style={{ fontFamily: "Lora, serif", fontSize: "15px", color: "var(--muted-foreground)", margin: 0 }}>{book.title}</p>
-                              <p style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", color: "var(--muted-foreground)", margin: "2px 0 0" }}>{book.author}</p>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-              </motion.div>
-            )}
-
             {activeTab === "profile" && (
               <motion.div
                 key="profile"
@@ -442,7 +355,6 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around", padding: "12px 24px 20px", borderTop: "1px solid var(--border)", background: "var(--card)" }}>
           {([
             { id: "library" as Tab, icon: BookOpen, label: "书架" },
-            { id: "bookmarks" as Tab, icon: Bookmark, label: "书签" },
             { id: "profile" as Tab, icon: User, label: "我的" },
           ]).map(({ id, icon: Icon, label }) => (
             <button
@@ -480,6 +392,5 @@ export default function App() {
           )}
         </AnimatePresence>
       </div>
-    </div>
   );
 }
