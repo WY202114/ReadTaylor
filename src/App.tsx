@@ -17,8 +17,18 @@ import {
 } from "lucide-react";
 import { bookFromFile, loadBooks, saveBooks, type Book } from "./lib/books";
 import { delFile } from "./lib/filestore";
+import {
+  desktopJobId,
+  isDesktopApp,
+  pickDesktopBooks,
+  prepareDesktopBook,
+} from "./lib/desktop";
+import {
+  archiveToFixedLayoutEPUB,
+  pdfToFixedLayoutEPUB,
+} from "./lib/fixedLayoutEpub";
 
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "3.0.0";
 
 type Tab = "library" | "profile";
 
@@ -38,10 +48,17 @@ export default function App() {
   const [readingBook, setReadingBook] = useState<Book | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [toast, setToast] = useState("");
+  const [toolchain, setToolchain] = useState<DesktopToolchainStatus | null>(null);
+  const booksRef = useRef(books);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimer = useRef<number | undefined>(undefined);
+  const activeDesktopJob = useRef("");
+  const desktopImportHandler = useRef<(refs: DesktopBookReference[]) => Promise<void>>(
+    async () => undefined
+  );
 
   useEffect(() => {
+    booksRef.current = books;
     saveBooks(books);
   }, [books]);
 
@@ -57,37 +74,150 @@ export default function App() {
     setToast(msg);
   };
 
+  useEffect(() => {
+    const desktop = window.readTaylorDesktop;
+    if (!desktop) return;
+    void desktop.getToolchain().then(setToolchain);
+    const stopProgress = desktop.onConversionProgress((update) => {
+      if (update.jobId === activeDesktopJob.current) stick(update.message);
+    });
+    const stopOpenBooks = desktop.onOpenBooks((refs) => {
+      void desktopImportHandler.current(refs);
+    });
+    return () => {
+      stopProgress();
+      stopOpenBooks();
+    };
+  }, []);
+
   const filteredBooks = books.filter(
     (b) => b.title.includes(searchQuery) || b.author.includes(searchQuery)
   );
   const readingBooks = books.filter((b) => b.progress > 0 && b.progress < 100);
   const finishedBooks = books.filter((b) => b.progress >= 100);
+  const desktopMode = isDesktopApp();
+  const supportedFormatLabel = desktopMode
+    ? "EPUB / MOBI / AZW / AZW3 / CBZ / CBR / ZIP / PDF / TXT / MD"
+    : "TXT / MD / PDF / EPUB / CBZ / ZIP";
 
-  const pickFile = () => fileInputRef.current?.click();
+  const addImportedBooks = (imported: Book[]): boolean => {
+    if (!imported.length) return false;
+    const importedSourceKeys = new Set(
+      imported.map((book) => book.sourceKey).filter((key): key is string => Boolean(key))
+    );
+    const retained = booksRef.current.filter(
+      (book) => !book.sourceKey || !importedSourceKeys.has(book.sourceKey)
+    );
+    const next = [...imported].reverse().concat(retained);
+    if (!saveBooks(next)) return false;
+    booksRef.current = next;
+    setBooks(next);
+    return true;
+  };
 
-  const onFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = ""; // 允许重复选同一文件
-    if (!file) return;
-    const ext = (file.name.split(".").pop() || "").toLowerCase();
-    if (ext === "pdf") stick("正在解析 PDF，较大文件需要几秒…");
-    else if (ext === "epub") stick("正在解析 EPUB…");
-    const { book, error } = await bookFromFile(file);
-    if (error) {
-      flash(error);
+  const importBrowserFiles = async (files: File[]) => {
+    const imported: Book[] = [];
+    const errors: string[] = [];
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index];
+      const ext = (file.name.split(".").pop() || "").toLowerCase();
+      const sourceKey = `browser:${file.name}:${file.size}:${file.lastModified}`;
+      const existing = booksRef.current.find((book) => book.sourceKey === sourceKey);
+      stick(`正在解析 ${file.name}${files.length > 1 ? `（${index + 1}/${files.length}）` : ""}…`);
+      const { book, error } = await bookFromFile(file, { sourceKey, id: existing?.id });
+      if (book) {
+        if (existing) {
+          book.progress = existing.progress;
+          book.lastChapter = Math.min(existing.lastChapter, book.chapters.length - 1);
+          book.lastScroll = existing.lastScroll || 0;
+        }
+        imported.push(book);
+      }
+      if (error) errors.push(`${file.name}：${error}`);
+      if (ext === "pdf") await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+
+    if (imported.length && !addImportedBooks(imported)) {
+      flash("本地存储空间不足，未能把书籍加入书架。");
       return;
     }
-    if (book) {
-      setBooks((prev) => {
-        const next = [book, ...prev];
-        if (!saveBooks(next)) {
-          flash("文件较大，本地存储已满，未能保存到书架。");
-          return prev;
-        }
-        return next;
-      });
-      flash(`已导入《${book.title}》，本地解析为 ${book.chapters.length} 章。`);
+    if (errors.length) {
+      flash(imported.length ? `已导入 ${imported.length} 本，另有 ${errors.length} 本失败。` : errors[0]);
+    } else if (imported.length) {
+      flash(`已导入 ${imported.length} 本书，所有内容都保存在本机。`);
     }
+  };
+
+  const importDesktopReferences = async (references: DesktopBookReference[]) => {
+    if (!references.length) return;
+    const imported: Book[] = [];
+    const errors: string[] = [];
+    let convertedCount = 0;
+    for (let index = 0; index < references.length; index++) {
+      const reference = references[index];
+      const jobId = desktopJobId();
+      activeDesktopJob.current = jobId;
+      stick(`正在处理 ${reference.name}${references.length > 1 ? `（${index + 1}/${references.length}）` : ""}…`);
+      try {
+        const prepared = await prepareDesktopBook(reference, jobId);
+        let readableFile = prepared.file;
+        let convertedLocally = prepared.converted;
+        if (prepared.sourceExtension === "pdf") {
+          readableFile = await pdfToFixedLayoutEPUB(prepared.file, (update) => stick(update.message));
+          convertedLocally = true;
+        } else if (prepared.sourceExtension === "cbz" || prepared.sourceExtension === "zip") {
+          readableFile = await archiveToFixedLayoutEPUB(prepared.file, (update) => stick(update.message));
+          convertedLocally = true;
+        }
+        const existing = booksRef.current.find((book) => book.sourceKey === reference.sourceKey);
+        const { book, error } = await bookFromFile(readableFile, {
+          sourceKey: reference.sourceKey,
+          id: existing?.id,
+        });
+        if (error || !book) throw new Error(error || "无法读取转换后的 EPUB。");
+        if (existing) {
+          book.progress = existing.progress;
+          book.lastChapter = Math.min(existing.lastChapter, book.chapters.length - 1);
+          book.lastScroll = existing.lastScroll || 0;
+        }
+        if (convertedLocally) {
+          book.fileType = prepared.sourceExtension.toUpperCase();
+          convertedCount += 1;
+        }
+        imported.push(book);
+      } catch (error) {
+        errors.push(`${reference.name}：${error instanceof Error ? error.message : "导入失败"}`);
+      }
+    }
+    activeDesktopJob.current = "";
+    if (imported.length && !addImportedBooks(imported)) {
+      flash("本地存储空间不足，未能把转换后的书籍加入书架。");
+      return;
+    }
+    if (errors.length) {
+      console.error("部分桌面书籍导入失败", errors);
+      flash(imported.length ? `已导入 ${imported.length} 本，另有 ${errors.length} 本失败。` : errors[0]);
+    } else {
+      flash(`已导入 ${imported.length} 本书。${convertedCount ? "转换已在本机完成。" : ""}`);
+    }
+    if (window.readTaylorDesktop) {
+      void window.readTaylorDesktop.getToolchain().then(setToolchain);
+    }
+  };
+  desktopImportHandler.current = importDesktopReferences;
+
+  const pickFile = async () => {
+    if (isDesktopApp()) {
+      await importDesktopReferences(await pickDesktopBooks());
+    } else {
+      fileInputRef.current?.click();
+    }
+  };
+
+  const onFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ""; // 允许重复选同一文件
+    if (files.length) await importBrowserFiles(files);
   };
 
   const deleteBook = (id: string, title: string) => {
@@ -98,13 +228,15 @@ export default function App() {
 
   const openBook = (book: Book) => setReadingBook(book);
 
-  const closeReader = (lastChapterIndex: number) => {
+  const closeReader = (lastChapterIndex: number, lastScroll: number) => {
     if (readingBook) {
       const total = readingBook.chapters.length;
       const progress = Math.round(((lastChapterIndex + 1) / total) * 100);
       setBooks((prev) =>
         prev.map((b) =>
-          b.id === readingBook.id ? { ...b, lastChapter: lastChapterIndex, progress } : b
+          b.id === readingBook.id
+            ? { ...b, lastChapter: lastChapterIndex, lastScroll, progress }
+            : b
         )
       );
     }
@@ -142,7 +274,8 @@ export default function App() {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".txt,.md,.epub,.pdf,text/plain"
+        accept=".txt,.md,.epub,.pdf,.cbz,.zip,text/plain"
+        multiple
         style={{ display: "none" }}
         onChange={onFileChange}
       />
@@ -203,7 +336,7 @@ export default function App() {
                         书架还是空的
                       </h2>
                       <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", lineHeight: 1.7, color: "var(--muted-foreground)", margin: "0 0 24px", maxWidth: "260px" }}>
-                        ReadTaylor 不提供任何书籍内容。上传你自己的 TXT / MD / PDF / EPUB 文件，它只在你的浏览器本地打开。
+                        ReadTaylor 不提供任何书籍内容。选择你自己的电子书，文件只在本机读取和转换。
                       </p>
                       <button
                         onClick={pickFile}
@@ -339,7 +472,22 @@ export default function App() {
 
                 <div style={{ borderRadius: "16px", overflow: "hidden", border: "1px solid var(--border)" }}>
                   {[
-                    { label: "上传新书", value: "TXT / MD / PDF / EPUB", action: pickFile },
+                    { label: "上传新书", value: supportedFormatLabel, action: pickFile },
+                    ...(desktopMode
+                      ? [
+                          {
+                            label: "本地格式转换",
+                            value: toolchain?.available
+                              ? "可用"
+                              : toolchain
+                                ? "等待加入转换引擎"
+                                : "检测中…",
+                            action: toolchain && !toolchain.available
+                              ? () => void window.readTaylorDesktop?.openCalibreHelp()
+                              : undefined,
+                          },
+                        ]
+                      : []),
                     { label: "夜间模式", value: isDark ? "已开启" : "已关闭", action: () => setIsDark((d) => !d) },
                     { label: "关于应用", value: `v${APP_VERSION}`, action: undefined },
                   ].map((item, i) => (
@@ -355,7 +503,7 @@ export default function App() {
                 </div>
 
                 <p style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", lineHeight: 1.7, color: "var(--muted-foreground)", marginTop: "20px", textAlign: "center" }}>
-                  ReadTaylor 不提供书籍内容。所有文件仅在本机浏览器中读取与保存。
+                  ReadTaylor 不提供书籍内容。所有文件仅在本机读取、转换与保存，不会上传到服务器。
                 </p>
               </motion.div>
             )}

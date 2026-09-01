@@ -18,21 +18,26 @@ import { renderChapter, resolveInternalIndex, cleanup as cleanupEpub } from "../
 
 interface ReaderViewProps {
   book: Book;
-  onBack: (lastChapterIndex: number) => void;
+  onBack: (lastChapterIndex: number, lastScroll: number) => void;
   isDark: boolean;
   onToggleDark: () => void;
 }
 
 export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewProps) {
-  const [chapterIndex, setChapterIndex] = useState(
-    Math.min(book.lastChapter || 0, book.chapters.length - 1)
-  );
+  const initialChapterIndex = Math.min(book.lastChapter || 0, book.chapters.length - 1);
+  const [chapterIndex, setChapterIndex] = useState(initialChapterIndex);
   const [fontSize, setFontSize] = useState(18);
   const [showToolbar, setShowToolbar] = useState(false);
   const [bookmarks, setBookmarks] = useState<Set<string>>(new Set());
   const [showChapters, setShowChapters] = useState(false);
-  const [scrollProgress, setScrollProgress] = useState(0);
+  const [scrollProgress, setScrollProgress] = useState(
+    Math.min(Math.max(book.lastScroll || 0, 0), 1)
+  );
   const contentRef = useRef<HTMLDivElement>(null);
+  const restorePositionRef = useRef({
+    chapterIndex: initialChapterIndex,
+    progress: Math.min(Math.max(book.lastScroll || 0, 0), 1),
+  });
 
   const isFidelity = book.mode === "fidelity";
   const [srcdoc, setSrcdoc] = useState("");
@@ -73,6 +78,15 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       setScrollProgress(max > 0 ? el.scrollTop / max : 0);
     };
     cwin.addEventListener("scroll", onScroll);
+    const saved = restorePositionRef.current;
+    if (saved && saved.chapterIndex === chapterIndex) {
+      restorePositionRef.current = { chapterIndex: -1, progress: 0 };
+      window.requestAnimationFrame(() => {
+        const el = cdoc.scrollingElement || cdoc.documentElement;
+        cwin.scrollTo(0, Math.max(0, el.scrollHeight - el.clientHeight) * saved.progress);
+        onScroll();
+      });
+    }
     cdoc.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement)?.closest?.("a");
       if (a) {
@@ -99,8 +113,15 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   }, [chapterIndex]);
 
   useEffect(() => {
-    if (contentRef.current) contentRef.current.scrollTop = 0;
-    setScrollProgress(0);
+    const element = contentRef.current;
+    if (!element) return;
+    const saved = restorePositionRef.current;
+    const progress = saved.chapterIndex === chapterIndex ? saved.progress : 0;
+    restorePositionRef.current = { chapterIndex: -1, progress: 0 };
+    window.requestAnimationFrame(() => {
+      element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight) * progress;
+      setScrollProgress(progress);
+    });
   }, [chapterIndex]);
 
   const toggleBookmark = () => {
@@ -132,7 +153,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         style={{ borderBottom: "1px solid var(--border)" }}
       >
         <button
-          onClick={() => onBack(chapterIndex)}
+          onClick={() => onBack(chapterIndex, scrollProgress)}
           className="w-9 h-9 flex items-center justify-center rounded-full transition-colors"
           style={{ background: "var(--secondary)" }}
         >

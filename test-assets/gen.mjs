@@ -145,6 +145,13 @@ const epub = makeZip([
 ]);
 writeFileSync(join(here, "test.epub"), epub);
 
+// ---------- CBZ：两页图片漫画 ----------
+const cbz = makeZip([
+  { name: "page-001.png", data: PNG_RED },
+  { name: "page-002.png", data: PNG_RED },
+]);
+writeFileSync(join(here, "test.cbz"), cbz);
+
 // ---------- PDF：3 页，每页一行文字，offsets 程序计算 ----------
 function makePdf() {
   const objects = [];
@@ -177,4 +184,25 @@ function makePdf() {
 }
 writeFileSync(join(here, "test.pdf"), makePdf());
 
-console.log("生成完成: test.epub, test.pdf");
+function makeScanPdf() {
+  const objects = [];
+  objects[1] = `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`;
+  objects[2] = `2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n`;
+  objects[3] = `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] /Contents 4 0 R >>\nendobj\n`;
+  const stream = "q 0.92 0.88 0.76 rg 40 60 320 480 re f Q";
+  objects[4] = `4 0 obj\n<< /Length ${stream.length} >>\nstream\n${stream}\nendstream\nendobj\n`;
+  let pdf = "%PDF-1.4\n";
+  const offsets = [];
+  for (let i = 1; i <= 4; i++) {
+    offsets[i] = Buffer.byteLength(pdf);
+    pdf += objects[i];
+  }
+  const xrefStart = Buffer.byteLength(pdf);
+  pdf += "xref\n0 5\n0000000000 65535 f \n";
+  for (let i = 1; i <= 4; i++) pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  pdf += `trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  return Buffer.from(pdf, "latin1");
+}
+writeFileSync(join(here, "test-scan.pdf"), makeScanPdf());
+
+console.log("生成完成: test.epub, test.cbz, test.pdf, test-scan.pdf");

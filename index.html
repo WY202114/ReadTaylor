@@ -3,10 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline' blob:; img-src 'self' data: blob:; font-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; frame-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
+    />
     <title>ReadTaylor</title>
     <meta
       name="description"
-      content="ReadTaylor 是一个移动端本地阅读器，不提供书籍内容，用户需上传自己的 TXT、EPUB 或 PDF 文件。"
+      content="ReadTaylor 是一个本地电子书阅读器，可打开 EPUB，并在桌面端本地转换 MOBI、AZW、漫画压缩包和 PDF。"
     />
     <meta name="theme-color" content="#f5f0e8" />
     <link rel="manifest" href="/manifest.json" />

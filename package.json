@@ -1,11 +1,19 @@
 {
   "name": "readtaylor",
+  "description": "A local-first desktop and web ebook reader with on-device format conversion.",
+  "author": "ReadTaylor contributors",
   "private": true,
-  "version": "1.0.0",
+  "version": "3.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
+    "dev:desktop": "concurrently -k -s first \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build",
+    "build:desktop:dir": "npm run build && electron-builder --win --dir",
+    "build:desktop": "npm run build && node scripts/verify-calibre.cjs && electron-builder --win nsis",
+    "calibre:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Prepare-Calibre.ps1",
+    "test:desktop": "node --test electron/*.test.cjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -21,8 +29,61 @@
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
     "@vitejs/plugin-react": "4.7.0",
+    "concurrently": "^10.0.5",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
     "tailwindcss": "4.1.12",
     "typescript": "5.6.3",
-    "vite": "6.3.5"
+    "vite": "6.3.5",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.readtaylor.reader",
+    "productName": "ReadTaylor",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/calibre",
+        "to": "calibre",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "ThirdPartyNotices.md",
+        "to": "ThirdPartyNotices.md"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "ReadTaylor-${version}-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ReadTaylor"
+    },
+    "fileAssociations": [
+      { "ext": "epub", "name": "EPUB book", "role": "Viewer" },
+      { "ext": "mobi", "name": "MOBI book", "role": "Viewer" },
+      { "ext": "azw", "name": "Kindle AZW book", "role": "Viewer" },
+      { "ext": "azw3", "name": "Kindle AZW3 book", "role": "Viewer" },
+      { "ext": "cbz", "name": "CBZ comic", "role": "Viewer" },
+      { "ext": "cbr", "name": "CBR comic", "role": "Viewer" },
+      { "ext": "zip", "name": "ZIP comic archive", "role": "Viewer" },
+      { "ext": "pdf", "name": "PDF document", "role": "Viewer" }
+    ]
   }
 }

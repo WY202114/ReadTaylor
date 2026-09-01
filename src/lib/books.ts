@@ -1,6 +1,7 @@
 // 本地书库：所有书籍来自用户上传的文件，只存在浏览器本地。
 // ReadTaylor 不内置任何书籍内容。
 import { putFile } from "./filestore";
+import { archiveToFixedLayoutEPUB, pdfToFixedLayoutEPUB } from "./fixedLayoutEpub";
 
 export interface Chapter {
   id: string;
@@ -18,8 +19,15 @@ export interface Book {
   chapters: Chapter[];
   progress: number; // 0-100
   lastChapter: number;
+  lastScroll?: number; // 0-1，章节内的阅读位置
   addedAt: number;
   mode?: "text" | "fidelity"; // 缺省按 text 处理；EPUB 为 fidelity（原版渲染）
+  sourceKey?: string; // 同一来源再次打开时更新现有书籍，避免重复
+}
+
+export interface BookImportOptions {
+  id?: string;
+  sourceKey?: string;
 }
 
 const STORAGE_KEY = "readtaylor.books.v1";
@@ -182,10 +190,11 @@ function buildBook(
   title: string,
   fileType: string,
   chapters: Chapter[],
-  author = "本地上传"
+  author = "本地上传",
+  options: BookImportOptions = {}
 ): Book {
   return {
-    id: uid(),
+    id: options.id || uid(),
     title,
     author,
     fileType,
@@ -193,7 +202,9 @@ function buildBook(
     chapters,
     progress: 0,
     lastChapter: 0,
+    lastScroll: 0,
     addedAt: Date.now(),
+    sourceKey: options.sourceKey,
   };
 }
 
@@ -219,7 +230,11 @@ function localTags(root: Element | Document, local: string): Element[] {
   return Array.from(root.getElementsByTagName("*")).filter((e) => e.localName === local);
 }
 
-async function epubToBook(file: File, fallbackTitle: string): Promise<AddResult> {
+async function epubToBook(
+  file: File,
+  fallbackTitle: string,
+  options: BookImportOptions
+): Promise<AddResult> {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
 
@@ -286,7 +301,7 @@ async function epubToBook(file: File, fallbackTitle: string): Promise<AddResult>
 
   if (chapters.length === 0) return { error: "无法从这个 EPUB 解析出章节。" };
 
-  const book = buildBook(bookTitle, "EPUB", chapters, author);
+  const book = buildBook(bookTitle, "EPUB", chapters, author, options);
   book.mode = "fidelity";
   // 原始文件存入 IndexedDB，供原版渲染反复读取
   await putFile(book.id, file);
@@ -298,32 +313,66 @@ export interface AddResult {
   error?: string;
 }
 
-export async function bookFromFile(file: File): Promise<AddResult> {
+export async function bookFromFile(
+  file: File,
+  options: BookImportOptions = {}
+): Promise<AddResult> {
   const baseName = file.name.replace(/\.[^.]+$/, "") || "未命名";
   const ext = (file.name.split(".").pop() || "").toLowerCase();
   const isText = ext === "txt" || ext === "md" || file.type.startsWith("text/");
 
   if (isText) {
     const text = await file.text();
-    return { book: buildBook(baseName, ext.toUpperCase() || "TXT", parseTextToChapters(text, baseName)) };
+    return {
+      book: buildBook(
+        baseName,
+        ext.toUpperCase() || "TXT",
+        parseTextToChapters(text, baseName),
+        "本地上传",
+        options
+      ),
+    };
   }
 
   if (ext === "pdf" || file.type === "application/pdf") {
     try {
       const text = await pdfToText(file);
       if (!text.trim()) {
-        return { error: "这个 PDF 没有可提取的文字（可能是扫描图片版），暂时无法阅读。" };
+        const fixedLayout = await pdfToFixedLayoutEPUB(file);
+        const result = await epubToBook(fixedLayout, baseName, options);
+        if (result.book) result.book.fileType = "PDF";
+        return result;
       }
-      return { book: buildBook(baseName, "PDF", parseTextToChapters(text, baseName)) };
+      return {
+        book: buildBook(
+          baseName,
+          "PDF",
+          parseTextToChapters(text, baseName),
+          "本地上传",
+          options
+        ),
+      };
     } catch (e) {
       console.error("PDF 解析失败", e);
       return { error: "PDF 解析失败，文件可能已加密或损坏。" };
     }
   }
 
+  if (ext === "cbz" || ext === "zip") {
+    try {
+      const fixedLayout = await archiveToFixedLayoutEPUB(file);
+      const result = await epubToBook(fixedLayout, baseName, options);
+      if (result.book) result.book.fileType = ext.toUpperCase();
+      return result;
+    } catch (e) {
+      console.error("漫画压缩包解析失败", e);
+      return { error: "漫画压缩包解析失败，请确认里面是按顺序排列的图片。" };
+    }
+  }
+
   if (ext === "epub" || file.type === "application/epub+zip") {
     try {
-      return await epubToBook(file, baseName);
+      return await epubToBook(file, baseName, options);
     } catch (e) {
       console.error("EPUB 解析失败", e);
       return { error: "EPUB 解析失败，文件可能已损坏或带 DRM 加密。" };
@@ -331,7 +380,7 @@ export async function bookFromFile(file: File): Promise<AddResult> {
   }
 
   return {
-    error: `${ext.toUpperCase() || "该格式"} 暂不支持，目前支持 TXT / MD / PDF / EPUB`,
+    error: `${ext.toUpperCase() || "该格式"} 暂不支持，目前支持 TXT / MD / PDF / EPUB / CBZ / ZIP`,
   };
 }
 
