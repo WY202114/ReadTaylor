@@ -1,8 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import {
   ArrowLeft,
-  Bookmark,
-  BookmarkCheck,
   Sun,
   Moon,
   Minus,
@@ -213,8 +211,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const [measurementSrcdoc, setMeasurementSrcdoc] = useState("");
   const [layoutRevision, setLayoutRevision] = useState(0);
   const [fontSize, setFontSize] = useState(18);
-  const [showToolbar, setShowToolbar] = useState(false);
-  const [bookmarks, setBookmarks] = useState<Set<string>>(new Set());
   const [showChapters, setShowChapters] = useState(false);
   const [selectionTarget, setSelectionTarget] = useState<SelectionTarget | null>(null);
   const [noteComposer, setNoteComposer] = useState<NoteComposer | null>(null);
@@ -248,8 +244,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const feedbackTimerRef = useRef<number | undefined>(undefined);
 
   const chapter = book.chapters[chapterIndex];
-  const bookmarkKey = `${book.id}-${chapter.id}`;
-  const isBookmarked = bookmarks.has(bookmarkKey);
 
   // 原版模式：渲染当前章节的原 HTML
   useEffect(() => {
@@ -412,7 +406,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     const y = bottom + 58 < window.innerHeight ? bottom + 10 : Math.max(10, top - 50);
     const { startOffset, endOffset } = getRangeOffsets(root, range, text);
 
-    setShowToolbar(false);
     setSelectionTarget({
       text: text.slice(0, 5000),
       x,
@@ -600,7 +593,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         return;
       }
       if (cwin.getSelection()?.toString().trim()) {
-        setShowToolbar(false);
         return;
       }
       const highlightedNote = noteAtPoint(cdoc, cdoc.body, e.clientX, e.clientY);
@@ -608,7 +600,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         editNote(highlightedNote);
         return;
       }
-      setShowToolbar((v) => !v);
     });
     refreshNoteHighlights();
   };
@@ -718,15 +709,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     });
   }, [chapterIndex]);
 
-  const toggleBookmark = () => {
-    setBookmarks((prev) => {
-      const next = new Set(prev);
-      if (next.has(bookmarkKey)) next.delete(bookmarkKey);
-      else next.add(bookmarkKey);
-      return next;
-    });
-  };
-
   return (
     <div
       className="relative flex flex-col h-screen overflow-hidden"
@@ -781,7 +763,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         <div className="flex shrink-0 items-center gap-2">
           <button
             onClick={() => {
-              setShowToolbar(false);
               setShowNotes(true);
             }}
             aria-label={`打开笔记${notes.length ? `，共 ${notes.length} 条` : ""}`}
@@ -809,18 +790,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               >
                 {notes.length > 99 ? "99+" : notes.length}
               </span>
-            )}
-          </button>
-          <button
-            onClick={toggleBookmark}
-            aria-label={isBookmarked ? "取消书签" : "添加书签"}
-            className="w-10 h-10 flex items-center justify-center rounded-full transition-colors"
-            style={{ background: "var(--secondary)" }}
-          >
-            {isBookmarked ? (
-              <BookmarkCheck size={18} style={{ color: "var(--accent)" }} />
-            ) : (
-              <Bookmark size={18} style={{ color: "var(--muted-foreground)" }} />
             )}
           </button>
         </div>
@@ -912,11 +881,31 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               className="flex shrink-0 items-center gap-1 rounded-lg transition-opacity disabled:opacity-30"
               style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px", minHeight: "40px", padding: "7px clamp(9px, 3vw, 14px)" }}
             >
-              <ChevronLeft size={15} /> 上一页
+              <ChevronLeft size={15} /> <span className="hidden sm:inline">上一页</span>
             </button>
             <span style={{ color: "var(--muted-foreground)", fontFamily: "Inter, sans-serif", fontSize: "12px", flex: 1, minWidth: 0, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {pageLabel}
             </span>
+            <button
+              onClick={onToggleDark}
+              aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
+              className="w-10 h-10 shrink-0 flex items-center justify-center rounded-full"
+              style={{ background: "var(--secondary)" }}
+            >
+              {isDark ? (
+                <Sun size={17} style={{ color: "var(--accent)" }} />
+              ) : (
+                <Moon size={17} style={{ color: "var(--muted-foreground)" }} />
+              )}
+            </button>
+            <button
+              onClick={() => setShowChapters(true)}
+              aria-label="打开目录"
+              className="w-10 h-10 shrink-0 flex items-center justify-center rounded-full"
+              style={{ background: "var(--secondary)" }}
+            >
+              <AlignJustify size={17} style={{ color: "var(--muted-foreground)" }} />
+            </button>
             <button
               onClick={goToNextPage}
               disabled={rendering || (
@@ -926,11 +915,12 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               className="flex shrink-0 items-center gap-1 rounded-lg transition-opacity disabled:opacity-30"
               style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px", minHeight: "40px", padding: "7px clamp(9px, 3vw, 14px)" }}
             >
-              下一页 <ChevronRight size={15} />
+              <span className="hidden sm:inline">下一页</span> <ChevronRight size={15} />
             </button>
           </div>
         </div>
       ) : (
+        <>
         <div
           ref={contentRef}
           className="flex-1 overflow-y-auto"
@@ -943,7 +933,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
           onKeyUp={captureReaderSelection}
           onClick={(event) => {
             if (window.getSelection()?.toString().trim()) {
-              setShowToolbar(false);
               return;
             }
             const highlightedNote = contentRef.current
@@ -953,7 +942,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               editNote(highlightedNote);
               return;
             }
-            setShowToolbar((v) => !v);
           }}
         >
           <h2
@@ -1014,6 +1002,57 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             </button>
           </div>
         </div>
+        <div
+          className="flex shrink-0 items-center justify-between gap-3"
+          style={{
+            borderTop: "1px solid var(--border)",
+            background: "var(--card)",
+            padding: "8px clamp(12px, 4vw, 20px) max(8px, env(safe-area-inset-bottom))",
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setFontSize((size) => Math.max(14, size - 1))}
+              aria-label="减小字号"
+              className="w-10 h-10 flex items-center justify-center rounded-full"
+              style={{ background: "var(--secondary)" }}
+            >
+              <Minus size={15} style={{ color: "var(--foreground)" }} />
+            </button>
+            <span style={{ fontFamily: "Inter, sans-serif", color: "var(--foreground)", fontSize: "13px", width: "26px", textAlign: "center" }}>
+              {fontSize}
+            </span>
+            <button
+              onClick={() => setFontSize((size) => Math.min(28, size + 1))}
+              aria-label="增大字号"
+              className="w-10 h-10 flex items-center justify-center rounded-full"
+              style={{ background: "var(--secondary)" }}
+            >
+              <Plus size={15} style={{ color: "var(--foreground)" }} />
+            </button>
+          </div>
+          <button
+            onClick={onToggleDark}
+            aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
+            className="w-10 h-10 flex items-center justify-center rounded-full"
+            style={{ background: "var(--secondary)" }}
+          >
+            {isDark ? (
+              <Sun size={17} style={{ color: "var(--accent)" }} />
+            ) : (
+              <Moon size={17} style={{ color: "var(--muted-foreground)" }} />
+            )}
+          </button>
+          <button
+            onClick={() => setShowChapters(true)}
+            aria-label="打开目录"
+            className="w-10 h-10 flex items-center justify-center rounded-full"
+            style={{ background: "var(--secondary)" }}
+          >
+            <AlignJustify size={17} style={{ color: "var(--muted-foreground)" }} />
+          </button>
+        </div>
+        </>
       )}
 
       {/* Text selection action — keep it separate from the normal reading toolbar. */}
@@ -1046,77 +1085,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             <NotebookPen size={16} />
             做笔记
           </motion.button>
-        )}
-      </AnimatePresence>
-
-      {/* Bottom toolbar */}
-      <AnimatePresence>
-        {showToolbar && !selectionTarget && !noteComposer && (
-          <motion.div
-            initial={{ y: 80, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 80, opacity: 0 }}
-            transition={{ duration: 0.22, ease: "easeOut" }}
-            className="absolute bottom-0 left-0 right-0 z-20 px-6 py-5"
-            style={{
-              background: "var(--card)",
-              borderTop: "1px solid var(--border)",
-              padding: "16px clamp(16px, 5vw, 24px) max(16px, env(safe-area-inset-bottom))",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between">
-              {/* Font size — 原版模式下对正文无效，隐藏 */}
-              {isFidelity ? (
-                <span style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", color: "var(--muted-foreground)" }}>
-                  原版排版
-                </span>
-              ) : (
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setFontSize((s) => Math.max(14, s - 1))}
-                  className="w-9 h-9 flex items-center justify-center rounded-full"
-                  style={{ background: "var(--secondary)" }}
-                >
-                  <Minus size={15} style={{ color: "var(--foreground)" }} />
-                </button>
-                <span style={{ fontFamily: "Inter, sans-serif", color: "var(--foreground)", fontSize: "14px", width: "28px", textAlign: "center" }}>
-                  {fontSize}
-                </span>
-                <button
-                  onClick={() => setFontSize((s) => Math.min(28, s + 1))}
-                  className="w-9 h-9 flex items-center justify-center rounded-full"
-                  style={{ background: "var(--secondary)" }}
-                >
-                  <Plus size={15} style={{ color: "var(--foreground)" }} />
-                </button>
-              </div>
-              )}
-
-              {/* Dark mode */}
-              <button
-                onClick={onToggleDark}
-                className="w-9 h-9 flex items-center justify-center rounded-full"
-                style={{ background: "var(--secondary)" }}
-              >
-                {isDark ? (
-                  <Sun size={17} style={{ color: "var(--accent)" }} />
-                ) : (
-                  <Moon size={17} style={{ color: "var(--muted-foreground)" }} />
-                )}
-              </button>
-
-              {/* Chapters */}
-              <button
-                onClick={() => setShowChapters(true)}
-                aria-label="打开目录"
-                className="w-9 h-9 flex items-center justify-center rounded-full"
-                style={{ background: "var(--secondary)" }}
-              >
-                <AlignJustify size={17} style={{ color: "var(--muted-foreground)" }} />
-              </button>
-            </div>
-          </motion.div>
         )}
       </AnimatePresence>
 
@@ -1491,9 +1459,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                     >
                       {ch.title}
                     </span>
-                    {bookmarks.has(`${book.id}-${ch.id}`) && (
-                      <BookmarkCheck size={14} style={{ color: "var(--accent)", marginLeft: "auto" }} />
-                    )}
                   </button>
                 ))}
               </div>
