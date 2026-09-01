@@ -5,6 +5,7 @@ interface PaginationCacheEntry {
   bookSignature: string;
   width: number;
   height: number;
+  fontSize: number;
   pageCounts: number[];
   updatedAt: number;
 }
@@ -31,7 +32,8 @@ function loadEntries(): PaginationCacheEntry[] {
 export function loadPaginationCache(
   book: Book,
   width: number,
-  height: number
+  height: number,
+  fontSize: number
 ): number[] | null {
   const signature = bookSignature(book);
   const entry = loadEntries().find((item) => (
@@ -39,6 +41,7 @@ export function loadPaginationCache(
     && item.bookSignature === signature
     && item.width === width
     && item.height === height
+    && item.fontSize === fontSize
     && item.pageCounts.length === book.chapters.length
     && item.pageCounts.every((count) => Number.isInteger(count) && count > 0)
   ));
@@ -49,6 +52,7 @@ export function savePaginationCache(
   book: Book,
   width: number,
   height: number,
+  fontSize: number,
   pageCounts: number[]
 ): void {
   if (!width || !height || pageCounts.length !== book.chapters.length) return;
@@ -61,12 +65,14 @@ export function savePaginationCache(
       && entry.bookSignature === signature
       && entry.width === width
       && entry.height === height
+      && entry.fontSize === fontSize
     ));
     const next: PaginationCacheEntry = {
       bookId: book.id,
       bookSignature: signature,
       width,
       height,
+      fontSize,
       pageCounts,
       updatedAt: Date.now(),
     };

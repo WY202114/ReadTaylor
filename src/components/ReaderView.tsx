@@ -21,6 +21,7 @@ import { renderChapter, resolveInternalIndex, cleanup as cleanupEpub } from "../
 import { paginateFrame, scrollFrameToPage } from "../lib/epubPagination";
 import { loadNotes, saveNotes, type NoteColor, type ReadingNote } from "../lib/notes";
 import { loadPaginationCache, savePaginationCache } from "../lib/paginationCache";
+import { loadBookFontSize, saveBookFontSize } from "../lib/readerPreferences";
 
 interface ReaderViewProps {
   book: Book;
@@ -210,7 +211,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const [measurementIndex, setMeasurementIndex] = useState(-1);
   const [measurementSrcdoc, setMeasurementSrcdoc] = useState("");
   const [layoutRevision, setLayoutRevision] = useState(0);
-  const [fontSize, setFontSize] = useState(18);
+  const [fontSize, setFontSize] = useState(() => loadBookFontSize(book.id, isFidelity ? 16 : 18));
   const [showChapters, setShowChapters] = useState(false);
   const [selectionTarget, setSelectionTarget] = useState<SelectionTarget | null>(null);
   const [noteComposer, setNoteComposer] = useState<NoteComposer | null>(null);
@@ -240,8 +241,11 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const measurementIframeRef = useRef<HTMLIFrameElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const paginationViewportRef = useRef({ width: 0, height: 0 });
+  const fontSizeRef = useRef(fontSize);
+  const previousFidelityFontSizeRef = useRef(fontSize);
   const activeNoteRangesRef = useRef<ActiveNoteRange[]>([]);
   const feedbackTimerRef = useRef<number | undefined>(undefined);
+  fontSizeRef.current = fontSize;
 
   const chapter = book.chapters[chapterIndex];
 
@@ -292,7 +296,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     const frame = measurementIframeRef.current;
     const measuredChapter = measurementIndex;
     if (!frame || measuredChapter < 0) return;
-    const { pageCount } = await paginateFrame(frame, false);
+    const { pageCount } = await paginateFrame(frame, false, fontSize);
     if (measuredChapter !== measurementIndex) return;
     setChapterPageCounts((previous) => {
       const next = [...previous];
@@ -309,8 +313,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     if (!isFidelity || fixedLayout) return;
     if (!chapterPageCounts.every((count): count is number => count != null && count > 0)) return;
     const { width, height } = paginationViewportRef.current;
-    savePaginationCache(book, width, height, chapterPageCounts);
-  }, [isFidelity, fixedLayout, book, chapterPageCounts]);
+    savePaginationCache(book, width, height, fontSize, chapterPageCounts);
+  }, [isFidelity, fixedLayout, book, fontSize, chapterPageCounts]);
 
   // 首次进入优先读取相同尺寸的分页缓存；只有未命中或尺寸变化时才重新计算。
   useEffect(() => {
@@ -326,7 +330,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       if (!previousSize) {
         previousSize = nextSize;
         if (fixedLayout) return;
-        const cached = loadPaginationCache(book, width, height);
+        const cached = loadPaginationCache(book, width, height, fontSizeRef.current);
         setChapterPageCounts(cached || book.chapters.map(() => null));
         setMeasurementIndex(cached ? -1 : 0);
         return;
@@ -334,7 +338,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       previousSize = nextSize;
       window.clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(() => {
-        const cached = fixedLayout ? null : loadPaginationCache(book, width, height);
+        const cached = fixedLayout ? null : loadPaginationCache(book, width, height, fontSizeRef.current);
         const position = paginationPositionRef.current;
         pendingPageRef.current = {
           chapterIndex: position.chapterIndex,
@@ -359,6 +363,34 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       window.clearTimeout(resizeTimer);
     };
   }, [isFidelity, fixedLayout, book.id, book.chapters.length]);
+
+  useEffect(() => {
+    saveBookFontSize(book.id, fontSize);
+  }, [book.id, fontSize]);
+
+  // 原版文字书调整字号后重新排版；相同字号与窗口尺寸优先读取已有缓存。
+  useEffect(() => {
+    if (!isFidelity || fixedLayout) return;
+    if (previousFidelityFontSizeRef.current === fontSize) return;
+    previousFidelityFontSizeRef.current = fontSize;
+    const { width, height } = paginationViewportRef.current;
+    if (!width || !height) return;
+
+    const position = paginationPositionRef.current;
+    pendingPageRef.current = {
+      chapterIndex: position.chapterIndex,
+      mode: "progress",
+      progress: position.pageCount > 1
+        ? position.pageIndex / (position.pageCount - 1)
+        : 0,
+    };
+    const cached = loadPaginationCache(book, width, height, fontSize);
+    setChapterPageIndex(0);
+    setChapterPageCounts(cached || book.chapters.map(() => null));
+    setMeasurementIndex(cached ? -1 : 0);
+    setMeasurementSrcdoc("");
+    setLayoutRevision((revision) => revision + 1);
+  }, [isFidelity, fixedLayout, book, fontSize]);
 
   // 离开阅读器时回收 EPUB 的 blob URL
   useEffect(() => () => cleanupEpub(), []);
@@ -536,7 +568,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     const cdoc = frame?.contentDocument;
     const cwin = frame?.contentWindow;
     if (!cdoc || !cwin) return;
-    const { pageCount } = await paginateFrame(frame, fixedLayout);
+    const { pageCount } = await paginateFrame(frame, fixedLayout, fontSize);
     setChapterPageCounts((previous) => {
       const next = [...previous];
       next[chapterIndex] = pageCount;
@@ -883,6 +915,31 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             >
               <ChevronLeft size={15} /> <span className="hidden sm:inline">上一页</span>
             </button>
+            {!fixedLayout && (
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  onClick={() => setFontSize((size) => Math.max(14, size - 1))}
+                  disabled={fontSize <= 14}
+                  aria-label="减小字号"
+                  className="w-8 h-8 flex items-center justify-center rounded-full transition-opacity disabled:opacity-30"
+                  style={{ background: "var(--secondary)" }}
+                >
+                  <Minus size={13} style={{ color: "var(--foreground)" }} />
+                </button>
+                <span style={{ fontFamily: "Inter, sans-serif", color: "var(--foreground)", fontSize: "11px", width: "20px", textAlign: "center" }}>
+                  {fontSize}
+                </span>
+                <button
+                  onClick={() => setFontSize((size) => Math.min(28, size + 1))}
+                  disabled={fontSize >= 28}
+                  aria-label="增大字号"
+                  className="w-8 h-8 flex items-center justify-center rounded-full transition-opacity disabled:opacity-30"
+                  style={{ background: "var(--secondary)" }}
+                >
+                  <Plus size={13} style={{ color: "var(--foreground)" }} />
+                </button>
+              </div>
+            )}
             <span style={{ color: "var(--muted-foreground)", fontFamily: "Inter, sans-serif", fontSize: "12px", flex: 1, minWidth: 0, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {pageLabel}
             </span>
@@ -1013,8 +1070,9 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
           <div className="flex items-center gap-2">
             <button
               onClick={() => setFontSize((size) => Math.max(14, size - 1))}
+              disabled={fontSize <= 14}
               aria-label="减小字号"
-              className="w-10 h-10 flex items-center justify-center rounded-full"
+              className="w-10 h-10 flex items-center justify-center rounded-full transition-opacity disabled:opacity-30"
               style={{ background: "var(--secondary)" }}
             >
               <Minus size={15} style={{ color: "var(--foreground)" }} />
@@ -1024,8 +1082,9 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             </span>
             <button
               onClick={() => setFontSize((size) => Math.min(28, size + 1))}
+              disabled={fontSize >= 28}
               aria-label="增大字号"
-              className="w-10 h-10 flex items-center justify-center rounded-full"
+              className="w-10 h-10 flex items-center justify-center rounded-full transition-opacity disabled:opacity-30"
               style={{ background: "var(--secondary)" }}
             >
               <Plus size={15} style={{ color: "var(--foreground)" }} />

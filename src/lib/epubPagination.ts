@@ -9,7 +9,8 @@ function nextFrame(win: Window): Promise<void> {
 
 export async function paginateFrame(
   frame: HTMLIFrameElement,
-  fixedLayout: boolean
+  fixedLayout: boolean,
+  fontSize = 16
 ): Promise<FramePagination> {
   const doc = frame.contentDocument;
   const win = frame.contentWindow;
@@ -44,6 +45,7 @@ export async function paginateFrame(
       html {
         width: 100% !important;
         height: 100% !important;
+        font-size: ${fontSize}px !important;
         overflow: hidden !important;
         scroll-behavior: auto !important;
       }
@@ -56,6 +58,7 @@ export async function paginateFrame(
         min-height: 0 !important;
         max-height: 100vh !important;
         margin: 0 !important;
+        font-size: ${fontSize}px !important;
         padding: ${topPadding}px ${sidePadding}px ${bottomPadding}px !important;
         overflow: visible !important;
         column-width: calc(100vw - ${columnGap}px) !important;
