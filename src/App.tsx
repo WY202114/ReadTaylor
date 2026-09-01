@@ -18,6 +18,7 @@ import {
 import { bookFromFile, loadBooks, saveBooks, type Book } from "./lib/books";
 import { delFile } from "./lib/filestore";
 import { deleteNotesForBook } from "./lib/notes";
+import { deletePaginationCacheForBook } from "./lib/paginationCache";
 import {
   desktopJobId,
   isDesktopApp,
@@ -226,6 +227,7 @@ export default function App() {
     setBooks((prev) => prev.filter((b) => b.id !== id));
     delFile(id); // 清掉 IndexedDB 里的原始文件（EPUB 原版渲染用）
     deleteNotesForBook(id);
+    deletePaginationCacheForBook(id);
   };
 
   const openBook = (book: Book) => setReadingBook(book);

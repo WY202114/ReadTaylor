@@ -22,6 +22,7 @@ import type { Book } from "../lib/books";
 import { renderChapter, resolveInternalIndex, cleanup as cleanupEpub } from "../lib/epubRender";
 import { paginateFrame, scrollFrameToPage } from "../lib/epubPagination";
 import { loadNotes, saveNotes, type ReadingNote } from "../lib/notes";
+import { loadPaginationCache, savePaginationCache } from "../lib/paginationCache";
 
 interface ReaderViewProps {
   book: Book;
@@ -68,7 +69,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const [chapterPageCounts, setChapterPageCounts] = useState<Array<number | null>>(() => (
     fixedLayout ? book.chapters.map(() => 1) : book.chapters.map(() => null)
   ));
-  const [measurementIndex, setMeasurementIndex] = useState(fixedLayout ? -1 : 0);
+  // 等阅读区拿到准确尺寸后再决定读取缓存还是重新测量。
+  const [measurementIndex, setMeasurementIndex] = useState(-1);
   const [measurementSrcdoc, setMeasurementSrcdoc] = useState("");
   const [layoutRevision, setLayoutRevision] = useState(0);
   const [fontSize, setFontSize] = useState(18);
@@ -102,6 +104,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const measurementIframeRef = useRef<HTMLIFrameElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const paginationViewportRef = useRef({ width: 0, height: 0 });
   const feedbackTimerRef = useRef<number | undefined>(undefined);
 
   const chapter = book.chapters[chapterIndex];
@@ -167,7 +170,15 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     );
   };
 
-  // 窗口尺寸改变后页数会变化；保留当前章节内的相对位置并重新计算全书页码。
+  // 一整本书在当前阅读区尺寸下测量完成后，保存页数供下次直接使用。
+  useEffect(() => {
+    if (!isFidelity || fixedLayout) return;
+    if (!chapterPageCounts.every((count): count is number => count != null && count > 0)) return;
+    const { width, height } = paginationViewportRef.current;
+    savePaginationCache(book, width, height, chapterPageCounts);
+  }, [isFidelity, fixedLayout, book, chapterPageCounts]);
+
+  // 首次进入优先读取相同尺寸的分页缓存；只有未命中或尺寸变化时才重新计算。
   useEffect(() => {
     if (!isFidelity || !viewportRef.current) return;
     let previousSize = "";
@@ -177,13 +188,19 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       const height = Math.round(entry.contentRect.height);
       const nextSize = `${width}x${height}`;
       if (!width || !height || nextSize === previousSize) return;
+      paginationViewportRef.current = { width, height };
       if (!previousSize) {
         previousSize = nextSize;
+        if (fixedLayout) return;
+        const cached = loadPaginationCache(book, width, height);
+        setChapterPageCounts(cached || book.chapters.map(() => null));
+        setMeasurementIndex(cached ? -1 : 0);
         return;
       }
       previousSize = nextSize;
       window.clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(() => {
+        const cached = fixedLayout ? null : loadPaginationCache(book, width, height);
         const position = paginationPositionRef.current;
         pendingPageRef.current = {
           chapterIndex: position.chapterIndex,
@@ -193,10 +210,11 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             : 0,
         };
         setChapterPageIndex(0);
-        setChapterPageCounts(
-          fixedLayout ? book.chapters.map(() => 1) : book.chapters.map(() => null)
+        setChapterPageCounts(fixedLayout
+          ? book.chapters.map(() => 1)
+          : cached || book.chapters.map(() => null)
         );
-        setMeasurementIndex(fixedLayout ? -1 : 0);
+        setMeasurementIndex(fixedLayout || cached ? -1 : 0);
         setMeasurementSrcdoc("");
         setLayoutRevision((value) => value + 1);
       }, 180);
