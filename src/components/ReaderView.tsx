@@ -21,7 +21,7 @@ import { motion, AnimatePresence } from "motion/react";
 import type { Book } from "../lib/books";
 import { renderChapter, resolveInternalIndex, cleanup as cleanupEpub } from "../lib/epubRender";
 import { paginateFrame, scrollFrameToPage } from "../lib/epubPagination";
-import { loadNotes, saveNotes, type ReadingNote } from "../lib/notes";
+import { loadNotes, saveNotes, type NoteColor, type ReadingNote } from "../lib/notes";
 import { loadPaginationCache, savePaginationCache } from "../lib/paginationCache";
 
 interface ReaderViewProps {
@@ -43,6 +43,8 @@ type SelectionTarget = {
   chapterId: string;
   chapterTitle: string;
   pageIndex?: number;
+  startOffset: number;
+  endOffset: number;
 };
 
 type NoteComposer = {
@@ -53,7 +55,144 @@ type NoteComposer = {
   chapterTitle: string;
   pageIndex?: number;
   createdAt?: number;
+  color: NoteColor;
+  startOffset?: number;
+  endOffset?: number;
 };
+
+type ActiveNoteRange = {
+  note: ReadingNote;
+  startOffset: number;
+  endOffset: number;
+};
+
+const NOTE_COLORS: Array<{ id: NoteColor; label: string; hex: string; fill: string }> = [
+  { id: "yellow", label: "黄色", hex: "#C58B20", fill: "rgba(236, 190, 76, 0.42)" },
+  { id: "orange", label: "橙色", hex: "#C96B2C", fill: "rgba(230, 132, 62, 0.38)" },
+  { id: "red", label: "红色", hex: "#B84A4A", fill: "rgba(214, 83, 83, 0.34)" },
+  { id: "blue", label: "蓝色", hex: "#447DB6", fill: "rgba(74, 137, 199, 0.32)" },
+  { id: "green", label: "绿色", hex: "#4E8A68", fill: "rgba(76, 148, 103, 0.32)" },
+];
+
+function noteColor(color?: NoteColor) {
+  return NOTE_COLORS.find((item) => item.id === color) || NOTE_COLORS[0];
+}
+
+function getRangeOffsets(root: Node, range: Range, selectedText: string): { startOffset: number; endOffset: number } {
+  const rawText = range.toString();
+  const leadingWhitespace = rawText.length - rawText.trimStart().length;
+  const before = range.cloneRange();
+  before.selectNodeContents(root);
+  before.setEnd(range.startContainer, range.startOffset);
+  const startOffset = before.toString().length + leadingWhitespace;
+  return { startOffset, endOffset: startOffset + selectedText.length };
+}
+
+function rangeFromOffsets(root: Node, startOffset: number, endOffset: number): Range | null {
+  if (startOffset < 0 || endOffset <= startOffset) return null;
+  const doc = root.ownerDocument || document;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let position = 0;
+  let startNode: Text | null = null;
+  let endNode: Text | null = null;
+  let startInNode = 0;
+  let endInNode = 0;
+  let node = walker.nextNode() as Text | null;
+
+  while (node) {
+    const nextPosition = position + node.data.length;
+    if (!startNode && startOffset >= position && startOffset <= nextPosition) {
+      startNode = node;
+      startInNode = startOffset - position;
+    }
+    if (endOffset >= position && endOffset <= nextPosition) {
+      endNode = node;
+      endInNode = endOffset - position;
+      break;
+    }
+    position = nextPosition;
+    node = walker.nextNode() as Text | null;
+  }
+
+  if (!startNode || !endNode) return null;
+  const range = doc.createRange();
+  range.setStart(startNode, startInNode);
+  range.setEnd(endNode, endInNode);
+  return range;
+}
+
+function resolveNoteRange(root: Node, note: ReadingNote): ActiveNoteRange | null {
+  const text = root.textContent || "";
+  let startOffset = note.startOffset;
+  let endOffset = note.endOffset;
+  if (
+    startOffset == null
+    || endOffset == null
+    || text.slice(startOffset, endOffset) !== note.quote
+  ) {
+    startOffset = text.indexOf(note.quote);
+    endOffset = startOffset >= 0 ? startOffset + note.quote.length : -1;
+  }
+  if (startOffset < 0 || endOffset <= startOffset) return null;
+  return { note, startOffset, endOffset };
+}
+
+function applyNoteHighlights(doc: Document, root: Node, notes: ReadingNote[]): ActiveNoteRange[] {
+  const highlightCss = doc.defaultView?.CSS as typeof CSS & {
+    highlights?: { delete: (name: string) => void; set: (name: string, value: unknown) => void };
+  };
+  const HighlightConstructor = (doc.defaultView as Window & {
+    Highlight?: new (...ranges: Range[]) => unknown;
+  } | null)?.Highlight;
+  if (!highlightCss?.highlights || !HighlightConstructor) return [];
+
+  let style = doc.getElementById("readtaylor-note-highlights") as HTMLStyleElement | null;
+  if (!style) {
+    style = doc.createElement("style");
+    style.id = "readtaylor-note-highlights";
+    doc.head.appendChild(style);
+  }
+  style.textContent = NOTE_COLORS.map((color) => `
+    ::highlight(readtaylor-note-${color.id}) {
+      background-color: ${color.fill};
+      text-decoration: underline;
+      text-decoration-color: ${color.hex};
+      text-decoration-thickness: 2px;
+      text-underline-offset: 2px;
+    }
+  `).join("\n");
+
+  const activeRanges = notes
+    .map((note) => resolveNoteRange(root, note))
+    .filter((item): item is ActiveNoteRange => item != null);
+
+  NOTE_COLORS.forEach((color) => {
+    const name = `readtaylor-note-${color.id}`;
+    highlightCss.highlights?.delete(name);
+    const ranges = activeRanges
+      .filter((item) => noteColor(item.note.color).id === color.id)
+      .map((item) => rangeFromOffsets(root, item.startOffset, item.endOffset))
+      .filter((range): range is Range => range != null);
+    if (ranges.length) highlightCss.highlights?.set(name, new HighlightConstructor(...ranges));
+  });
+  return activeRanges;
+}
+
+function textOffsetAtPoint(doc: Document, root: Node, x: number, y: number): number | null {
+  const legacyRange = (doc as Document & {
+    caretRangeFromPoint?: (clientX: number, clientY: number) => Range | null;
+  }).caretRangeFromPoint?.(x, y);
+  const caretPosition = (doc as Document & {
+    caretPositionFromPoint?: (clientX: number, clientY: number) => { offsetNode: Node; offset: number } | null;
+  }).caretPositionFromPoint?.(x, y);
+  const node = legacyRange?.startContainer || caretPosition?.offsetNode;
+  const offset = legacyRange?.startOffset ?? caretPosition?.offset;
+  if (!node || offset == null || !root.contains(node)) return null;
+  const before = doc.createRange();
+  before.selectNodeContents(root);
+  before.setEnd(node, offset);
+  return before.toString().length;
+}
 
 function clampProgress(value: number): number {
   return Math.min(Math.max(value || 0, 0), 1);
@@ -105,6 +244,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const measurementIframeRef = useRef<HTMLIFrameElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const paginationViewportRef = useRef({ width: 0, height: 0 });
+  const activeNoteRangesRef = useRef<ActiveNoteRange[]>([]);
   const feedbackTimerRef = useRef<number | undefined>(undefined);
 
   const chapter = book.chapters[chapterIndex];
@@ -244,6 +384,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const captureSelection = (
     selection: Selection | null,
     source: SelectionTarget["source"],
+    root: Node | null,
     offsetLeft = 0,
     offsetTop = 0
   ) => {
@@ -253,14 +394,9 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       return false;
     }
 
-    if (source === "reader" && contentRef.current) {
-      const commonAncestor = selection.getRangeAt(0).commonAncestorContainer;
-      if (!contentRef.current.contains(
-        commonAncestor.nodeType === Node.ELEMENT_NODE
-          ? commonAncestor as Element
-          : commonAncestor.parentElement
-      )) return false;
-    }
+    if (!root) return false;
+    const commonAncestor = selection.getRangeAt(0).commonAncestorContainer;
+    if (!root.contains(commonAncestor)) return false;
 
     const range = selection.getRangeAt(0);
     const rangeRect = range.getBoundingClientRect();
@@ -274,6 +410,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     const bottom = offsetTop + rect.bottom;
     const x = Math.min(Math.max((left + right) / 2, 68), window.innerWidth - 68);
     const y = bottom + 58 < window.innerHeight ? bottom + 10 : Math.max(10, top - 50);
+    const { startOffset, endOffset } = getRangeOffsets(root, range, text);
 
     setShowToolbar(false);
     setSelectionTarget({
@@ -284,12 +421,18 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       chapterId: chapter.id,
       chapterTitle: chapter.title,
       pageIndex: isFidelity ? chapterPageIndex : undefined,
+      startOffset,
+      endOffset,
     });
     return true;
   };
 
   const captureReaderSelection = () => {
-    window.requestAnimationFrame(() => captureSelection(window.getSelection(), "reader"));
+    window.requestAnimationFrame(() => captureSelection(
+      window.getSelection(),
+      "reader",
+      contentRef.current
+    ));
   };
 
   const clearBrowserSelection = (source: SelectionTarget["source"]) => {
@@ -306,6 +449,9 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       chapterId: selected.chapterId,
       chapterTitle: selected.chapterTitle,
       pageIndex: selected.pageIndex,
+      color: "yellow",
+      startOffset: selected.startOffset,
+      endOffset: selected.endOffset,
     });
     clearBrowserSelection(selected.source);
     setSelectionTarget(null);
@@ -321,11 +467,14 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       chapterTitle: note.chapterTitle,
       pageIndex: note.pageIndex,
       createdAt: note.createdAt,
+      color: note.color || "yellow",
+      startOffset: note.startOffset,
+      endOffset: note.endOffset,
     });
   };
 
   const commitNote = () => {
-    if (!noteComposer || !noteComposer.body.trim()) return;
+    if (!noteComposer) return;
     const now = Date.now();
     const nextNote: ReadingNote = {
       id: noteComposer.id || `${now}-${Math.random().toString(36).slice(2, 9)}`,
@@ -334,6 +483,9 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       chapterTitle: noteComposer.chapterTitle,
       quote: noteComposer.quote,
       body: noteComposer.body.trim(),
+      color: noteComposer.color,
+      startOffset: noteComposer.startOffset,
+      endOffset: noteComposer.endOffset,
       pageIndex: noteComposer.pageIndex,
       createdAt: noteComposer.createdAt || now,
       updatedAt: now,
@@ -361,6 +513,30 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     setNotes(nextNotes);
     flashNoteFeedback("笔记已删除");
   };
+
+  const refreshNoteHighlights = () => {
+    const chapterNotes = notes.filter((note) => note.chapterId === chapter.id);
+    if (isFidelity) {
+      const doc = iframeRef.current?.contentDocument;
+      if (!doc?.body) return;
+      activeNoteRangesRef.current = applyNoteHighlights(doc, doc.body, chapterNotes);
+    } else if (contentRef.current) {
+      activeNoteRangesRef.current = applyNoteHighlights(document, contentRef.current, chapterNotes);
+    }
+  };
+
+  const noteAtPoint = (doc: Document, root: Node, x: number, y: number): ReadingNote | null => {
+    const offset = textOffsetAtPoint(doc, root, x, y);
+    if (offset == null) return null;
+    return activeNoteRangesRef.current.find((item) => (
+      offset >= item.startOffset && offset <= item.endOffset
+    ))?.note || null;
+  };
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(refreshNoteHighlights);
+    return () => window.cancelAnimationFrame(frame);
+  }, [notes, chapterIndex, isFidelity, srcdoc, rendering]);
 
   const onIframeLoad = async () => {
     const frame = iframeRef.current;
@@ -391,7 +567,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     const captureIframeSelection = () => {
       window.requestAnimationFrame(() => {
         const frameRect = frame.getBoundingClientRect();
-        captureSelection(cwin.getSelection(), "iframe", frameRect.left, frameRect.top);
+        captureSelection(cwin.getSelection(), "iframe", cdoc.body, frameRect.left, frameRect.top);
       });
     };
     cdoc.addEventListener("mouseup", captureIframeSelection);
@@ -427,8 +603,14 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         setShowToolbar(false);
         return;
       }
+      const highlightedNote = noteAtPoint(cdoc, cdoc.body, e.clientX, e.clientY);
+      if (highlightedNote) {
+        editNote(highlightedNote);
+        return;
+      }
       setShowToolbar((v) => !v);
     });
+    refreshNoteHighlights();
   };
 
   useEffect(() => {
@@ -596,18 +778,52 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
           {chapter.title}
         </button>
 
-        <button
-          onClick={toggleBookmark}
-          aria-label={isBookmarked ? "取消书签" : "添加书签"}
-          className="w-10 h-10 shrink-0 flex items-center justify-center rounded-full transition-colors"
-          style={{ background: "var(--secondary)" }}
-        >
-          {isBookmarked ? (
-            <BookmarkCheck size={18} style={{ color: "var(--accent)" }} />
-          ) : (
-            <Bookmark size={18} style={{ color: "var(--muted-foreground)" }} />
-          )}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            onClick={() => {
+              setShowToolbar(false);
+              setShowNotes(true);
+            }}
+            aria-label={`打开笔记${notes.length ? `，共 ${notes.length} 条` : ""}`}
+            className="relative w-10 h-10 flex items-center justify-center rounded-full"
+            style={{ background: "var(--secondary)" }}
+          >
+            <StickyNote size={18} style={{ color: notes.length ? "var(--accent)" : "var(--muted-foreground)" }} />
+            {notes.length > 0 && (
+              <span
+                aria-hidden="true"
+                style={{
+                  position: "absolute",
+                  right: "-3px",
+                  top: "-5px",
+                  minWidth: "17px",
+                  height: "17px",
+                  padding: "0 4px",
+                  borderRadius: "9px",
+                  background: "var(--accent)",
+                  color: "var(--accent-foreground)",
+                  fontFamily: "Inter, sans-serif",
+                  fontSize: "10px",
+                  lineHeight: "17px",
+                }}
+              >
+                {notes.length > 99 ? "99+" : notes.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={toggleBookmark}
+            aria-label={isBookmarked ? "取消书签" : "添加书签"}
+            className="w-10 h-10 flex items-center justify-center rounded-full transition-colors"
+            style={{ background: "var(--secondary)" }}
+          >
+            {isBookmarked ? (
+              <BookmarkCheck size={18} style={{ color: "var(--accent)" }} />
+            ) : (
+              <Bookmark size={18} style={{ color: "var(--muted-foreground)" }} />
+            )}
+          </button>
+        </div>
       </div>
 
       {/* 旧版导入的 EPUB（纯文本、无原始文件）提示重新上传 */}
@@ -725,9 +941,16 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
           onMouseUp={captureReaderSelection}
           onTouchEnd={captureReaderSelection}
           onKeyUp={captureReaderSelection}
-          onClick={() => {
+          onClick={(event) => {
             if (window.getSelection()?.toString().trim()) {
               setShowToolbar(false);
+              return;
+            }
+            const highlightedNote = contentRef.current
+              ? noteAtPoint(document, contentRef.current, event.clientX, event.clientY)
+              : null;
+            if (highlightedNote) {
+              editNote(highlightedNote);
               return;
             }
             setShowToolbar((v) => !v);
@@ -883,40 +1106,6 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 )}
               </button>
 
-              {/* Notes */}
-              <button
-                onClick={() => {
-                  setShowToolbar(false);
-                  setShowNotes(true);
-                }}
-                aria-label={`打开笔记${notes.length ? `，共 ${notes.length} 条` : ""}`}
-                className="relative w-9 h-9 flex items-center justify-center rounded-full"
-                style={{ background: "var(--secondary)" }}
-              >
-                <StickyNote size={17} style={{ color: notes.length ? "var(--accent)" : "var(--muted-foreground)" }} />
-                {notes.length > 0 && (
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      position: "absolute",
-                      right: "-3px",
-                      top: "-5px",
-                      minWidth: "17px",
-                      height: "17px",
-                      padding: "0 4px",
-                      borderRadius: "9px",
-                      background: "var(--accent)",
-                      color: "var(--accent-foreground)",
-                      fontFamily: "Inter, sans-serif",
-                      fontSize: "10px",
-                      lineHeight: "17px",
-                    }}
-                  >
-                    {notes.length > 99 ? "99+" : notes.length}
-                  </span>
-                )}
-              </button>
-
               {/* Chapters */}
               <button
                 onClick={() => setShowChapters(true)}
@@ -997,6 +1186,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                     style={{
                       background: "var(--secondary)",
                       border: "1px solid var(--border)",
+                      borderLeft: `4px solid ${noteColor(note.color).hex}`,
                       borderRadius: "14px",
                       padding: "14px",
                       marginBottom: "12px",
@@ -1047,8 +1237,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                     >
                       {note.quote}
                     </blockquote>
-                    <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", lineHeight: 1.65, color: "var(--foreground)", margin: 0, whiteSpace: "pre-wrap" }}>
-                      {note.body}
+                    <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", lineHeight: 1.65, color: note.body ? "var(--foreground)" : "var(--muted-foreground)", margin: 0, whiteSpace: "pre-wrap" }}>
+                      {note.body || "仅标记，没有附加文字"}
                     </p>
                   </article>
                 ))}
@@ -1128,6 +1318,40 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 {noteComposer.quote}
               </blockquote>
 
+              <div style={{ marginBottom: "13px" }}>
+                <div style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", color: "var(--muted-foreground)", marginBottom: "8px" }}>
+                  标记颜色
+                </div>
+                <div className="flex flex-wrap items-center" style={{ gap: "9px" }}>
+                  {NOTE_COLORS.map((color) => {
+                    const selected = noteComposer.color === color.id;
+                    return (
+                      <button
+                        key={color.id}
+                        type="button"
+                        onClick={() => setNoteComposer((current) => current ? { ...current, color: color.id } : current)}
+                        aria-label={`选择${color.label}标记`}
+                        aria-pressed={selected}
+                        className="flex items-center gap-2 rounded-full"
+                        style={{
+                          minHeight: "34px",
+                          padding: "6px 10px 6px 7px",
+                          border: selected ? `2px solid ${color.hex}` : "1px solid var(--border)",
+                          background: selected ? color.fill : "var(--secondary)",
+                          color: "var(--foreground)",
+                          fontFamily: "Inter, sans-serif",
+                          fontSize: "11px",
+                        }}
+                      >
+                        <span style={{ width: "17px", height: "17px", borderRadius: "50%", background: color.hex, display: "inline-block" }} />
+                        {color.label}
+                        {selected && <Check size={13} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <textarea
                 autoFocus
                 value={noteComposer.body}
@@ -1135,7 +1359,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 onKeyDown={(event) => {
                   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") commitNote();
                 }}
-                placeholder="写下你的想法…"
+                placeholder="写下你的想法（可选）…"
                 rows={5}
                 style={{
                   width: "100%",
@@ -1159,8 +1383,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 </span>
                 <button
                   onClick={commitNote}
-                  disabled={!noteComposer.body.trim()}
-                  className="flex items-center gap-2 rounded-full transition-opacity disabled:opacity-40"
+                  className="flex items-center gap-2 rounded-full"
                   style={{
                     minHeight: "40px",
                     border: "none",

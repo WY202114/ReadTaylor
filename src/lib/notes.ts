@@ -1,3 +1,5 @@
+export type NoteColor = "yellow" | "orange" | "red" | "blue" | "green";
+
 export interface ReadingNote {
   id: string;
   bookId: string;
@@ -5,6 +7,9 @@ export interface ReadingNote {
   chapterTitle: string;
   quote: string;
   body: string;
+  color?: NoteColor;
+  startOffset?: number;
+  endOffset?: number;
   pageIndex?: number;
   createdAt: number;
   updatedAt: number;
