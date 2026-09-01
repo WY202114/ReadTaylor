@@ -8,6 +8,11 @@ import {
   Minus,
   Plus,
   AlignJustify,
+  Check,
+  NotebookPen,
+  Pencil,
+  StickyNote,
+  Trash2,
   X,
   ChevronLeft,
   ChevronRight,
@@ -16,6 +21,7 @@ import { motion, AnimatePresence } from "motion/react";
 import type { Book } from "../lib/books";
 import { renderChapter, resolveInternalIndex, cleanup as cleanupEpub } from "../lib/epubRender";
 import { paginateFrame, scrollFrameToPage } from "../lib/epubPagination";
+import { loadNotes, saveNotes, type ReadingNote } from "../lib/notes";
 
 interface ReaderViewProps {
   book: Book;
@@ -27,6 +33,26 @@ interface ReaderViewProps {
 type PendingPage =
   | { chapterIndex: number; mode: "first" | "last" }
   | { chapterIndex: number; mode: "progress"; progress: number };
+
+type SelectionTarget = {
+  text: string;
+  x: number;
+  y: number;
+  source: "reader" | "iframe";
+  chapterId: string;
+  chapterTitle: string;
+  pageIndex?: number;
+};
+
+type NoteComposer = {
+  id?: string;
+  quote: string;
+  body: string;
+  chapterId: string;
+  chapterTitle: string;
+  pageIndex?: number;
+  createdAt?: number;
+};
 
 function clampProgress(value: number): number {
   return Math.min(Math.max(value || 0, 0), 1);
@@ -49,6 +75,11 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const [showToolbar, setShowToolbar] = useState(false);
   const [bookmarks, setBookmarks] = useState<Set<string>>(new Set());
   const [showChapters, setShowChapters] = useState(false);
+  const [selectionTarget, setSelectionTarget] = useState<SelectionTarget | null>(null);
+  const [noteComposer, setNoteComposer] = useState<NoteComposer | null>(null);
+  const [notes, setNotes] = useState<ReadingNote[]>(() => loadNotes(book.id));
+  const [showNotes, setShowNotes] = useState(false);
+  const [noteFeedback, setNoteFeedback] = useState("");
   const [scrollProgress, setScrollProgress] = useState(initialProgress);
   const contentRef = useRef<HTMLDivElement>(null);
   const restorePositionRef = useRef({
@@ -71,6 +102,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const measurementIframeRef = useRef<HTMLIFrameElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const feedbackTimerRef = useRef<number | undefined>(undefined);
 
   const chapter = book.chapters[chapterIndex];
   const bookmarkKey = `${book.id}-${chapter.id}`;
@@ -179,6 +211,139 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   // 离开阅读器时回收 EPUB 的 blob URL
   useEffect(() => () => cleanupEpub(), []);
 
+  useEffect(() => () => window.clearTimeout(feedbackTimerRef.current), []);
+
+  useEffect(() => {
+    setSelectionTarget(null);
+  }, [chapterIndex, chapterPageIndex]);
+
+  const flashNoteFeedback = (message: string) => {
+    setNoteFeedback(message);
+    window.clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = window.setTimeout(() => setNoteFeedback(""), 2200);
+  };
+
+  const captureSelection = (
+    selection: Selection | null,
+    source: SelectionTarget["source"],
+    offsetLeft = 0,
+    offsetTop = 0
+  ) => {
+    const text = selection?.toString().trim() || "";
+    if (!selection || selection.rangeCount === 0 || !text) {
+      setSelectionTarget((current) => current?.source === source ? null : current);
+      return false;
+    }
+
+    if (source === "reader" && contentRef.current) {
+      const commonAncestor = selection.getRangeAt(0).commonAncestorContainer;
+      if (!contentRef.current.contains(
+        commonAncestor.nodeType === Node.ELEMENT_NODE
+          ? commonAncestor as Element
+          : commonAncestor.parentElement
+      )) return false;
+    }
+
+    const range = selection.getRangeAt(0);
+    const rangeRect = range.getBoundingClientRect();
+    const firstRect = range.getClientRects()[0];
+    const rect = rangeRect.width || rangeRect.height ? rangeRect : firstRect;
+    if (!rect) return false;
+
+    const left = offsetLeft + rect.left;
+    const top = offsetTop + rect.top;
+    const right = offsetLeft + rect.right;
+    const bottom = offsetTop + rect.bottom;
+    const x = Math.min(Math.max((left + right) / 2, 68), window.innerWidth - 68);
+    const y = bottom + 58 < window.innerHeight ? bottom + 10 : Math.max(10, top - 50);
+
+    setShowToolbar(false);
+    setSelectionTarget({
+      text: text.slice(0, 5000),
+      x,
+      y,
+      source,
+      chapterId: chapter.id,
+      chapterTitle: chapter.title,
+      pageIndex: isFidelity ? chapterPageIndex : undefined,
+    });
+    return true;
+  };
+
+  const captureReaderSelection = () => {
+    window.requestAnimationFrame(() => captureSelection(window.getSelection(), "reader"));
+  };
+
+  const clearBrowserSelection = (source: SelectionTarget["source"]) => {
+    if (source === "iframe") iframeRef.current?.contentWindow?.getSelection()?.removeAllRanges();
+    else window.getSelection()?.removeAllRanges();
+  };
+
+  const startNoteFromSelection = () => {
+    if (!selectionTarget) return;
+    const selected = selectionTarget;
+    setNoteComposer({
+      quote: selected.text,
+      body: "",
+      chapterId: selected.chapterId,
+      chapterTitle: selected.chapterTitle,
+      pageIndex: selected.pageIndex,
+    });
+    clearBrowserSelection(selected.source);
+    setSelectionTarget(null);
+  };
+
+  const editNote = (note: ReadingNote) => {
+    setShowNotes(false);
+    setNoteComposer({
+      id: note.id,
+      quote: note.quote,
+      body: note.body,
+      chapterId: note.chapterId,
+      chapterTitle: note.chapterTitle,
+      pageIndex: note.pageIndex,
+      createdAt: note.createdAt,
+    });
+  };
+
+  const commitNote = () => {
+    if (!noteComposer || !noteComposer.body.trim()) return;
+    const now = Date.now();
+    const nextNote: ReadingNote = {
+      id: noteComposer.id || `${now}-${Math.random().toString(36).slice(2, 9)}`,
+      bookId: book.id,
+      chapterId: noteComposer.chapterId,
+      chapterTitle: noteComposer.chapterTitle,
+      quote: noteComposer.quote,
+      body: noteComposer.body.trim(),
+      pageIndex: noteComposer.pageIndex,
+      createdAt: noteComposer.createdAt || now,
+      updatedAt: now,
+    };
+    const nextNotes = noteComposer.id
+      ? notes.map((note) => note.id === noteComposer.id ? nextNote : note)
+      : [nextNote, ...notes];
+    nextNotes.sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!saveNotes(book.id, nextNotes)) {
+      flashNoteFeedback("本地空间不足，笔记未能保存");
+      return;
+    }
+    setNotes(nextNotes);
+    setNoteComposer(null);
+    flashNoteFeedback(noteComposer.id ? "笔记已更新" : "笔记已保存");
+  };
+
+  const removeNote = (note: ReadingNote) => {
+    if (!window.confirm("删除这条笔记？")) return;
+    const nextNotes = notes.filter((item) => item.id !== note.id);
+    if (!saveNotes(book.id, nextNotes)) {
+      flashNoteFeedback("删除失败，请稍后再试");
+      return;
+    }
+    setNotes(nextNotes);
+    flashNoteFeedback("笔记已删除");
+  };
+
   const onIframeLoad = async () => {
     const frame = iframeRef.current;
     const cdoc = frame?.contentDocument;
@@ -205,6 +370,22 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     scrollFrameToPage(frame, targetPage);
     setRendering(false);
 
+    const captureIframeSelection = () => {
+      window.requestAnimationFrame(() => {
+        const frameRect = frame.getBoundingClientRect();
+        captureSelection(cwin.getSelection(), "iframe", frameRect.left, frameRect.top);
+      });
+    };
+    cdoc.addEventListener("mouseup", captureIframeSelection);
+    cdoc.addEventListener("touchend", captureIframeSelection);
+    cdoc.addEventListener("keyup", captureIframeSelection);
+    cdoc.addEventListener("selectionchange", () => {
+      const selection = cwin.getSelection();
+      if (!selection || selection.isCollapsed || !selection.toString().trim()) {
+        setSelectionTarget((current) => current?.source === "iframe" ? null : current);
+      }
+    });
+
     cdoc.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement)?.closest?.("a");
       if (a) {
@@ -222,6 +403,10 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
           }
         }
         else if (/^https?:/i.test(href)) window.open(href, "_blank", "noopener");
+        return;
+      }
+      if (cwin.getSelection()?.toString().trim()) {
+        setShowToolbar(false);
         return;
       }
       setShowToolbar((v) => !v);
@@ -519,7 +704,16 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             scrollbarWidth: "none",
             padding: "clamp(22px, 5vw, 36px) clamp(18px, 7vw, 72px)",
           }}
-          onClick={() => setShowToolbar((v) => !v)}
+          onMouseUp={captureReaderSelection}
+          onTouchEnd={captureReaderSelection}
+          onKeyUp={captureReaderSelection}
+          onClick={() => {
+            if (window.getSelection()?.toString().trim()) {
+              setShowToolbar(false);
+              return;
+            }
+            setShowToolbar((v) => !v);
+          }}
         >
           <h2
             className="mb-8"
@@ -581,9 +775,42 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         </div>
       )}
 
+      {/* Text selection action — keep it separate from the normal reading toolbar. */}
+      <AnimatePresence>
+        {selectionTarget && !noteComposer && (
+          <motion.button
+            key="selection-note-action"
+            initial={{ opacity: 0, scale: 0.94, y: -4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.94, y: -4 }}
+            transition={{ duration: 0.14 }}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={startNoteFromSelection}
+            className="fixed z-50 flex items-center gap-2 rounded-full"
+            style={{
+              left: selectionTarget.x,
+              top: selectionTarget.y,
+              transform: "translateX(-50%)",
+              minHeight: "40px",
+              padding: "9px 15px",
+              border: "1px solid color-mix(in srgb, var(--accent) 38%, var(--border))",
+              background: "var(--foreground)",
+              color: "var(--background)",
+              boxShadow: "0 10px 30px rgba(39, 29, 18, 0.2)",
+              fontFamily: "Inter, sans-serif",
+              fontSize: "13px",
+              fontWeight: 600,
+            }}
+          >
+            <NotebookPen size={16} />
+            做笔记
+          </motion.button>
+        )}
+      </AnimatePresence>
+
       {/* Bottom toolbar */}
       <AnimatePresence>
-        {showToolbar && (
+        {showToolbar && !selectionTarget && !noteComposer && (
           <motion.div
             initial={{ y: 80, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
@@ -638,6 +865,40 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 )}
               </button>
 
+              {/* Notes */}
+              <button
+                onClick={() => {
+                  setShowToolbar(false);
+                  setShowNotes(true);
+                }}
+                aria-label={`打开笔记${notes.length ? `，共 ${notes.length} 条` : ""}`}
+                className="relative w-9 h-9 flex items-center justify-center rounded-full"
+                style={{ background: "var(--secondary)" }}
+              >
+                <StickyNote size={17} style={{ color: notes.length ? "var(--accent)" : "var(--muted-foreground)" }} />
+                {notes.length > 0 && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      position: "absolute",
+                      right: "-3px",
+                      top: "-5px",
+                      minWidth: "17px",
+                      height: "17px",
+                      padding: "0 4px",
+                      borderRadius: "9px",
+                      background: "var(--accent)",
+                      color: "var(--accent-foreground)",
+                      fontFamily: "Inter, sans-serif",
+                      fontSize: "10px",
+                      lineHeight: "17px",
+                    }}
+                  >
+                    {notes.length > 99 ? "99+" : notes.length}
+                  </span>
+                )}
+              </button>
+
               {/* Chapters */}
               <button
                 onClick={() => setShowChapters(true)}
@@ -648,6 +909,279 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 <AlignJustify size={17} style={{ color: "var(--muted-foreground)" }} />
               </button>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Saved notes drawer */}
+      <AnimatePresence>
+        {showNotes && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-30"
+              style={{ background: "rgba(0,0,0,0.4)" }}
+              onClick={() => setShowNotes(false)}
+            />
+            <motion.aside
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ duration: 0.28, ease: "easeOut" }}
+              aria-label="我的笔记"
+              className="absolute right-0 top-0 bottom-0 z-40 flex flex-col"
+              style={{
+                background: "var(--card)",
+                width: "min(92vw, 420px)",
+                paddingTop: "env(safe-area-inset-top)",
+                paddingBottom: "env(safe-area-inset-bottom)",
+              }}
+            >
+              <div
+                className="flex items-center justify-between px-5 py-3.5"
+                style={{ borderBottom: "1px solid var(--border)", minHeight: "56px" }}
+              >
+                <div>
+                  <div style={{ fontFamily: "Lora, serif", fontSize: "17px", fontWeight: 600, color: "var(--foreground)" }}>
+                    我的笔记
+                  </div>
+                  <div style={{ fontFamily: "Inter, sans-serif", fontSize: "11px", color: "var(--muted-foreground)", marginTop: "2px" }}>
+                    {notes.length ? `${notes.length} 条 · 仅保存在本机` : "仅保存在本机"}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowNotes(false)}
+                  aria-label="关闭笔记"
+                  className="w-10 h-10 flex items-center justify-center rounded-full"
+                >
+                  <X size={20} style={{ color: "var(--muted-foreground)" }} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto" style={{ padding: "14px", scrollbarWidth: "none" }}>
+                {notes.length === 0 ? (
+                  <div className="flex h-full flex-col items-center justify-center text-center" style={{ padding: "32px 24px" }}>
+                    <div className="flex items-center justify-center rounded-full" style={{ width: "56px", height: "56px", background: "var(--secondary)", marginBottom: "14px" }}>
+                      <NotebookPen size={23} style={{ color: "var(--muted-foreground)" }} />
+                    </div>
+                    <p style={{ fontFamily: "Lora, serif", fontSize: "16px", fontWeight: 600, color: "var(--foreground)", margin: "0 0 7px" }}>
+                      还没有笔记
+                    </p>
+                    <p style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", lineHeight: 1.7, color: "var(--muted-foreground)", margin: 0, maxWidth: "250px" }}>
+                      关闭这里，在正文中选中文字，就能添加第一条笔记。
+                    </p>
+                  </div>
+                ) : notes.map((note) => (
+                  <article
+                    key={note.id}
+                    style={{
+                      background: "var(--secondary)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "14px",
+                      padding: "14px",
+                      marginBottom: "12px",
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-3" style={{ marginBottom: "9px" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontFamily: "Inter, sans-serif", fontSize: "11px", color: "var(--accent)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {note.chapterTitle}{note.pageIndex != null ? ` · 第 ${note.pageIndex + 1} 页` : ""}
+                        </div>
+                        <div style={{ fontFamily: "Inter, sans-serif", fontSize: "10px", color: "var(--muted-foreground)", marginTop: "3px" }}>
+                          {new Date(note.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          onClick={() => editNote(note)}
+                          aria-label="编辑笔记"
+                          className="w-8 h-8 flex items-center justify-center rounded-full"
+                          style={{ background: "var(--card)" }}
+                        >
+                          <Pencil size={14} style={{ color: "var(--muted-foreground)" }} />
+                        </button>
+                        <button
+                          onClick={() => removeNote(note)}
+                          aria-label="删除笔记"
+                          className="w-8 h-8 flex items-center justify-center rounded-full"
+                          style={{ background: "var(--card)" }}
+                        >
+                          <Trash2 size={14} style={{ color: "var(--muted-foreground)" }} />
+                        </button>
+                      </div>
+                    </div>
+                    <blockquote
+                      style={{
+                        borderLeft: "2px solid var(--accent)",
+                        color: "var(--muted-foreground)",
+                        fontFamily: "Lora, serif",
+                        fontSize: "12px",
+                        lineHeight: 1.65,
+                        margin: "0 0 10px",
+                        paddingLeft: "10px",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {note.quote}
+                    </blockquote>
+                    <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", lineHeight: 1.65, color: "var(--foreground)", margin: 0, whiteSpace: "pre-wrap" }}>
+                      {note.body}
+                    </p>
+                  </article>
+                ))}
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Note composer */}
+      <AnimatePresence>
+        {noteComposer && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-[60] flex items-end justify-center sm:items-center"
+            style={{ background: "rgba(20, 16, 12, 0.46)", padding: "clamp(10px, 3vw, 24px)" }}
+            onClick={() => setNoteComposer(null)}
+          >
+            <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-label={noteComposer.id ? "编辑笔记" : "添加笔记"}
+              initial={{ opacity: 0, y: 22, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 22, scale: 0.98 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              onClick={(event) => event.stopPropagation()}
+              style={{
+                width: "min(100%, 520px)",
+                maxHeight: "min(78vh, 620px)",
+                overflowY: "auto",
+                borderRadius: "18px",
+                border: "1px solid var(--border)",
+                background: "var(--card)",
+                boxShadow: "0 24px 70px rgba(20, 16, 12, 0.28)",
+                padding: "18px",
+                scrollbarWidth: "none",
+              }}
+            >
+              <div className="flex items-center justify-between" style={{ marginBottom: "13px" }}>
+                <div>
+                  <div style={{ fontFamily: "Lora, serif", fontSize: "18px", fontWeight: 600, color: "var(--foreground)" }}>
+                    {noteComposer.id ? "编辑笔记" : "做笔记"}
+                  </div>
+                  <div style={{ fontFamily: "Inter, sans-serif", fontSize: "11px", color: "var(--muted-foreground)", marginTop: "3px" }}>
+                    {noteComposer.chapterTitle}{noteComposer.pageIndex != null ? ` · 第 ${noteComposer.pageIndex + 1} 页` : ""}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setNoteComposer(null)}
+                  aria-label="关闭"
+                  className="w-9 h-9 flex items-center justify-center rounded-full"
+                  style={{ background: "var(--secondary)" }}
+                >
+                  <X size={18} style={{ color: "var(--muted-foreground)" }} />
+                </button>
+              </div>
+
+              <blockquote
+                style={{
+                  maxHeight: "128px",
+                  overflowY: "auto",
+                  borderLeft: "3px solid var(--accent)",
+                  borderRadius: "0 10px 10px 0",
+                  background: "var(--secondary)",
+                  color: "var(--muted-foreground)",
+                  fontFamily: "Lora, serif",
+                  fontSize: "13px",
+                  lineHeight: 1.7,
+                  margin: "0 0 13px",
+                  padding: "10px 12px",
+                  scrollbarWidth: "thin",
+                }}
+              >
+                {noteComposer.quote}
+              </blockquote>
+
+              <textarea
+                autoFocus
+                value={noteComposer.body}
+                onChange={(event) => setNoteComposer((current) => current ? { ...current, body: event.target.value } : current)}
+                onKeyDown={(event) => {
+                  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") commitNote();
+                }}
+                placeholder="写下你的想法…"
+                rows={5}
+                style={{
+                  width: "100%",
+                  minHeight: "132px",
+                  resize: "vertical",
+                  border: "1px solid var(--border)",
+                  borderRadius: "12px",
+                  outline: "none",
+                  background: "var(--background)",
+                  color: "var(--foreground)",
+                  fontFamily: "Inter, sans-serif",
+                  fontSize: "14px",
+                  lineHeight: 1.7,
+                  padding: "12px",
+                }}
+              />
+
+              <div className="flex items-center justify-between gap-3" style={{ marginTop: "13px" }}>
+                <span style={{ fontFamily: "Inter, sans-serif", fontSize: "10px", color: "var(--muted-foreground)" }}>
+                  Ctrl / ⌘ + Enter 保存
+                </span>
+                <button
+                  onClick={commitNote}
+                  disabled={!noteComposer.body.trim()}
+                  className="flex items-center gap-2 rounded-full transition-opacity disabled:opacity-40"
+                  style={{
+                    minHeight: "40px",
+                    border: "none",
+                    background: "var(--accent)",
+                    color: "var(--accent-foreground)",
+                    fontFamily: "Inter, sans-serif",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    padding: "9px 17px",
+                  }}
+                >
+                  <Check size={16} /> 保存笔记
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {noteFeedback && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="absolute left-1/2 z-[80] rounded-full"
+            style={{
+              top: "max(76px, calc(env(safe-area-inset-top) + 64px))",
+              transform: "translateX(-50%)",
+              background: "var(--foreground)",
+              color: "var(--background)",
+              boxShadow: "0 8px 24px rgba(20, 16, 12, 0.18)",
+              fontFamily: "Inter, sans-serif",
+              fontSize: "12px",
+              padding: "9px 14px",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {noteFeedback}
           </motion.div>
         )}
       </AnimatePresence>
