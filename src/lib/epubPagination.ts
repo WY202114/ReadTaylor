@@ -33,7 +33,12 @@ export async function paginateFrame(
       }
     `;
   } else {
-    const sidePadding = Math.min(52, Math.max(24, Math.round(frame.clientWidth * 0.04)));
+    const compactLayout = frame.clientWidth < 480;
+    const sidePadding = compactLayout
+      ? Math.max(16, Math.round(frame.clientWidth * 0.05))
+      : Math.min(52, Math.max(24, Math.round(frame.clientWidth * 0.04)));
+    const topPadding = compactLayout ? 20 : 28;
+    const bottomPadding = compactLayout ? 24 : 34;
     const columnGap = sidePadding * 2;
     style.textContent = `
       html {
@@ -51,7 +56,7 @@ export async function paginateFrame(
         min-height: 0 !important;
         max-height: 100vh !important;
         margin: 0 !important;
-        padding: 28px ${sidePadding}px 34px !important;
+        padding: ${topPadding}px ${sidePadding}px ${bottomPadding}px !important;
         overflow: visible !important;
         column-width: calc(100vw - ${columnGap}px) !important;
         column-gap: ${columnGap}px !important;

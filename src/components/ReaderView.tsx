@@ -345,7 +345,11 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   return (
     <div
       className="relative flex flex-col h-screen overflow-hidden"
-      style={{ background: isDark ? "var(--background)" : "#faf6ef" }}
+      style={{
+        background: isDark ? "var(--background)" : "#faf6ef",
+        height: "100dvh",
+        minHeight: "100svh",
+      }}
     >
       {/* Progress bar */}
       <div
@@ -358,8 +362,11 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
 
       {/* Header */}
       <div
-        className="flex items-center justify-between px-5 py-4 z-10"
-        style={{ borderBottom: "1px solid var(--border)" }}
+        className="flex items-center justify-between z-10"
+        style={{
+          borderBottom: "1px solid var(--border)",
+          padding: "max(10px, env(safe-area-inset-top)) clamp(12px, 4vw, 20px) 10px",
+        }}
       >
         <button
           onClick={() => onBack(
@@ -370,7 +377,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 : 0
               : scrollProgress
           )}
-          className="w-9 h-9 flex items-center justify-center rounded-full transition-colors"
+          aria-label="返回书架"
+          className="w-10 h-10 shrink-0 flex items-center justify-center rounded-full transition-colors"
           style={{ background: "var(--secondary)" }}
         >
           <ArrowLeft size={18} style={{ color: "var(--foreground)" }} />
@@ -378,7 +386,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
 
         <button
           onClick={() => setShowChapters(true)}
-          className="flex-1 mx-4 text-center truncate"
+          aria-label="打开目录"
+          className="flex-1 min-w-0 mx-3 sm:mx-4 text-center truncate"
           style={{ fontFamily: "Inter, sans-serif", color: "var(--muted-foreground)", fontSize: "13px" }}
         >
           {chapter.title}
@@ -386,7 +395,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
 
         <button
           onClick={toggleBookmark}
-          className="w-9 h-9 flex items-center justify-center rounded-full transition-colors"
+          aria-label={isBookmarked ? "取消书签" : "添加书签"}
+          className="w-10 h-10 shrink-0 flex items-center justify-center rounded-full transition-colors"
           style={{ background: "var(--secondary)" }}
         >
           {isBookmarked ? (
@@ -470,18 +480,22 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
 
           {/* 原版模式：按全书实际排版页数翻页 */}
           <div
-            className="flex items-center justify-between px-4 py-2"
-            style={{ borderTop: "1px solid var(--border)", background: "var(--card)" }}
+            className="flex items-center justify-between gap-2"
+            style={{
+              borderTop: "1px solid var(--border)",
+              background: "var(--card)",
+              padding: "8px clamp(10px, 3vw, 16px) max(8px, env(safe-area-inset-bottom))",
+            }}
           >
             <button
               onClick={goToPreviousPage}
               disabled={rendering || (chapterIndex === 0 && chapterPageIndex === 0)}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg transition-opacity disabled:opacity-30"
-              style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px" }}
+              className="flex shrink-0 items-center gap-1 rounded-lg transition-opacity disabled:opacity-30"
+              style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px", minHeight: "40px", padding: "7px clamp(9px, 3vw, 14px)" }}
             >
               <ChevronLeft size={15} /> 上一页
             </button>
-            <span style={{ color: "var(--muted-foreground)", fontFamily: "Inter, sans-serif", fontSize: "12px" }}>
+            <span style={{ color: "var(--muted-foreground)", fontFamily: "Inter, sans-serif", fontSize: "12px", flex: 1, minWidth: 0, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {pageLabel}
             </span>
             <button
@@ -490,8 +504,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 chapterIndex === book.chapters.length - 1
                 && chapterPageIndex >= currentChapterPageCount - 1
               )}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg transition-opacity disabled:opacity-30"
-              style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px" }}
+              className="flex shrink-0 items-center gap-1 rounded-lg transition-opacity disabled:opacity-30"
+              style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px", minHeight: "40px", padding: "7px clamp(9px, 3vw, 14px)" }}
             >
               下一页 <ChevronRight size={15} />
             </button>
@@ -500,8 +514,11 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       ) : (
         <div
           ref={contentRef}
-          className="flex-1 overflow-y-auto px-6 py-8"
-          style={{ scrollbarWidth: "none" }}
+          className="flex-1 overflow-y-auto"
+          style={{
+            scrollbarWidth: "none",
+            padding: "clamp(22px, 5vw, 36px) clamp(18px, 7vw, 72px)",
+          }}
           onClick={() => setShowToolbar((v) => !v)}
         >
           <h2
@@ -576,6 +593,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             style={{
               background: "var(--card)",
               borderTop: "1px solid var(--border)",
+              padding: "16px clamp(16px, 5vw, 24px) max(16px, env(safe-area-inset-bottom))",
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -623,6 +641,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               {/* Chapters */}
               <button
                 onClick={() => setShowChapters(true)}
+                aria-label="打开目录"
                 className="w-9 h-9 flex items-center justify-center rounded-full"
                 style={{ background: "var(--secondary)" }}
               >
@@ -650,12 +669,22 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               animate={{ x: 0 }}
               exit={{ x: "100%" }}
               transition={{ duration: 0.28, ease: "easeOut" }}
-              className="absolute right-0 top-0 bottom-0 z-40 w-72 flex flex-col"
-              style={{ background: "var(--card)" }}
+              aria-label="章节目录"
+              className="absolute right-0 top-0 bottom-0 z-40 flex flex-col"
+              style={{
+                background: "var(--card)",
+                width: "min(88vw, 360px)",
+                paddingTop: "env(safe-area-inset-top)",
+                paddingBottom: "env(safe-area-inset-bottom)",
+              }}
             >
-              <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
+              <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: "1px solid var(--border)", minHeight: "56px" }}>
                 <span style={{ fontFamily: "Lora, serif", fontSize: "17px", fontWeight: 600, color: "var(--foreground)" }}>目录</span>
-                <button onClick={() => setShowChapters(false)}>
+                <button
+                  onClick={() => setShowChapters(false)}
+                  aria-label="关闭目录"
+                  className="w-10 h-10 flex items-center justify-center rounded-full"
+                >
                   <X size={20} style={{ color: "var(--muted-foreground)" }} />
                 </button>
               </div>
@@ -667,15 +696,13 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                       goToChapter(i, "first");
                       setShowChapters(false);
                     }}
-                    className="w-full flex items-center gap-3 px-5 py-3.5 text-left transition-colors"
+                    className="w-full flex items-center px-5 py-3.5 text-left transition-colors"
                     style={{
                       background: i === chapterIndex ? "var(--secondary)" : "transparent",
                       borderLeft: i === chapterIndex ? "3px solid var(--accent)" : "3px solid transparent",
+                      minHeight: "48px",
                     }}
                   >
-                    <span style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", color: "var(--muted-foreground)", width: "20px" }}>
-                      {i + 1}
-                    </span>
                     <span
                       style={{
                         fontFamily: "Lora, serif",

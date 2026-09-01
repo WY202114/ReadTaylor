@@ -1,6 +1,7 @@
 const path = require("node:path");
 
 const port = process.env.READTAYLOR_CDP_PORT || "9222";
+const mobileViewport = process.env.READTAYLOR_MOBILE_VIEWPORT?.match(/^(\d+)x(\d+)$/);
 const files = process.argv.slice(2).map((file) => path.resolve(file));
 if (!files.length) {
   console.error("Pass one or more test book paths to browser-smoke.cjs.");
@@ -50,6 +51,14 @@ async function main() {
   try {
     await command("Runtime.enable");
     await command("DOM.enable");
+    if (mobileViewport) {
+      await command("Emulation.setDeviceMetricsOverride", {
+        width: Number(mobileViewport[1]),
+        height: Number(mobileViewport[2]),
+        deviceScaleFactor: 1,
+        mobile: true,
+      });
+    }
     await command("Runtime.evaluate", {
       expression: `localStorage.clear(); indexedDB.deleteDatabase("readtaylor"); location.reload();`,
     }).catch(() => undefined);
@@ -95,6 +104,70 @@ async function main() {
       mode: book.mode || "text",
     }));
     console.log(JSON.stringify(summary, null, 2));
+
+    if (process.env.READTAYLOR_CHECK_MOBILE_LAYOUT === "1") {
+      const firstBook = books[0];
+      const opened = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const title = ${JSON.stringify(books[0].title)};
+          const button = [...document.querySelectorAll("button")]
+            .find((item) => item.textContent.includes(title));
+          if (!button) return false;
+          button.click();
+          return true;
+        })()`,
+        returnByValue: true,
+      });
+      if (!opened.result.value) throw new Error("Mobile layout test book could not be opened.");
+
+      let layout = null;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await delay(100);
+        const result = await command("Runtime.evaluate", {
+          expression: `(() => {
+            const openButton = document.querySelector('button[aria-label="打开目录"]');
+            if (!openButton) return null;
+            openButton.click();
+            return true;
+          })()`,
+          returnByValue: true,
+        });
+        if (result.result.value) break;
+      }
+      await delay(350);
+      const result = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const drawer = document.querySelector('[aria-label="章节目录"]');
+          const backButton = document.querySelector('button[aria-label="返回书架"]');
+          const chapterButtons = drawer
+            ? [...drawer.lastElementChild.querySelectorAll(":scope > button")]
+            : [];
+          const firstChapter = chapterButtons[0];
+          return drawer && backButton && firstChapter ? {
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            drawerWidth: drawer.getBoundingClientRect().width,
+            backButtonWidth: backButton.getBoundingClientRect().width,
+            chapterRowHeight: firstChapter.getBoundingClientRect().height,
+            firstChapterText: firstChapter.firstElementChild?.textContent?.trim() || "",
+          } : null;
+        })()`,
+        returnByValue: true,
+      });
+      layout = result.result.value;
+      if (!layout) throw new Error("Mobile chapter drawer did not open.");
+      const expectedChapterTitle = firstBook.chapters[0].title.trim();
+      if (
+        layout.drawerWidth < layout.viewportWidth * 0.84
+        || layout.drawerWidth > layout.viewportWidth * 0.9
+        || layout.backButtonWidth < 40
+        || layout.chapterRowHeight < 48
+        || layout.firstChapterText !== expectedChapterTitle
+      ) {
+        throw new Error(`Unexpected mobile layout: ${JSON.stringify({ layout, expectedChapterTitle })}`);
+      }
+      console.log(JSON.stringify({ mobileLayout: layout }, null, 2));
+    }
 
     if (process.env.READTAYLOR_CHECK_PAGINATION === "1") {
       const opened = await command("Runtime.evaluate", {

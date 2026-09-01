@@ -28,7 +28,7 @@ import {
   pdfToFixedLayoutEPUB,
 } from "./lib/fixedLayoutEpub";
 
-const APP_VERSION = "3.0.1";
+const APP_VERSION = "3.0.2";
 
 type Tab = "library" | "profile";
 
