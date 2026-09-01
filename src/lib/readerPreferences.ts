@@ -1,4 +1,5 @@
 const FONT_SIZE_KEY = "readtaylor.fontSizes.v1";
+const SPEECH_RATE_KEY = "readtaylor.speechRate.v1";
 
 function loadFontSizes(): Record<string, number> {
   try {
@@ -31,5 +32,23 @@ export function deleteBookPreferences(bookId: string): void {
     localStorage.setItem(FONT_SIZE_KEY, JSON.stringify(sizes));
   } catch {
     // 删除书籍不应因清理偏好失败而中断。
+  }
+}
+
+export function loadSpeechRate(): number {
+  try {
+    const value = Number(localStorage.getItem(SPEECH_RATE_KEY));
+    return Number.isFinite(value) && value >= 0.5 && value <= 2 ? value : 1;
+  } catch {
+    return 1;
+  }
+}
+
+export function saveSpeechRate(rate: number): void {
+  try {
+    const safeRate = Math.min(2, Math.max(0.5, rate));
+    localStorage.setItem(SPEECH_RATE_KEY, String(safeRate));
+  } catch {
+    // 偏好保存失败不应影响正常朗读。
   }
 }

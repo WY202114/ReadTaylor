@@ -14,6 +14,10 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Pause,
+  Play,
+  Square,
+  Volume2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import type { Book } from "../lib/books";
@@ -21,7 +25,12 @@ import { renderChapter, resolveInternalIndex, cleanup as cleanupEpub } from "../
 import { paginateFrame, scrollFrameToPage } from "../lib/epubPagination";
 import { loadNotes, saveNotes, type NoteColor, type ReadingNote } from "../lib/notes";
 import { loadPaginationCache, savePaginationCache } from "../lib/paginationCache";
-import { loadBookFontSize, saveBookFontSize } from "../lib/readerPreferences";
+import {
+  loadBookFontSize,
+  loadSpeechRate,
+  saveBookFontSize,
+  saveSpeechRate,
+} from "../lib/readerPreferences";
 
 interface ReaderViewProps {
   book: Book;
@@ -197,6 +206,33 @@ function clampProgress(value: number): number {
   return Math.min(Math.max(value || 0, 0), 1);
 }
 
+function createSpeechChunks(text: string, progress: number): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  const approximateOffset = Math.floor(normalized.length * clampProgress(progress));
+  let remaining = normalized.slice(approximateOffset);
+  if (approximateOffset > 0) {
+    const nextSentence = remaining.search(/[。！？!?；;]/);
+    if (nextSentence >= 0 && nextSentence < 160) remaining = remaining.slice(nextSentence + 1).trim();
+  }
+  if (!remaining) remaining = normalized;
+
+  const sentences = remaining.match(/[^。！？!?；;]+[。！？!?；;]?/g) || [remaining];
+  const chunks: string[] = [];
+  sentences.forEach((sentence) => {
+    let rest = sentence.trim();
+    while (rest.length > 180) {
+      const candidates = [rest.lastIndexOf("，", 180), rest.lastIndexOf(",", 180), rest.lastIndexOf(" ", 180)];
+      const splitAt = Math.max(...candidates, 100);
+      chunks.push(rest.slice(0, splitAt + 1).trim());
+      rest = rest.slice(splitAt + 1).trim();
+    }
+    if (rest) chunks.push(rest);
+  });
+  return chunks;
+}
+
 export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewProps) {
   const initialChapterIndex = Math.min(book.lastChapter || 0, book.chapters.length - 1);
   const initialProgress = clampProgress(book.lastScroll || 0);
@@ -219,6 +255,10 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const [showNotes, setShowNotes] = useState(false);
   const [noteFeedback, setNoteFeedback] = useState("");
   const [scrollProgress, setScrollProgress] = useState(initialProgress);
+  const [showSpeechControls, setShowSpeechControls] = useState(false);
+  const [speechRate, setSpeechRate] = useState(loadSpeechRate);
+  const [speechStatus, setSpeechStatus] = useState<"idle" | "playing" | "paused">("idle");
+  const [speechMessage, setSpeechMessage] = useState("");
   const contentRef = useRef<HTMLDivElement>(null);
   const restorePositionRef = useRef({
     chapterIndex: initialChapterIndex,
@@ -245,7 +285,12 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const previousFidelityFontSizeRef = useRef(fontSize);
   const activeNoteRangesRef = useRef<ActiveNoteRange[]>([]);
   const feedbackTimerRef = useRef<number | undefined>(undefined);
+  const speechQueueRef = useRef<string[]>([]);
+  const speechIndexRef = useRef(0);
+  const speechSessionRef = useRef(0);
+  const speechRateRef = useRef(speechRate);
   fontSizeRef.current = fontSize;
+  speechRateRef.current = speechRate;
 
   const chapter = book.chapters[chapterIndex];
 
@@ -670,9 +715,110 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     ? totalPages > 1 ? (currentGlobalPage - 1) / (totalPages - 1) : 1
     : (chapterIndex + chapterPageIndex / currentChapterPageCount) / book.chapters.length;
 
+  const speechSupported = typeof window !== "undefined"
+    && "speechSynthesis" in window
+    && typeof SpeechSynthesisUtterance !== "undefined";
+
+  const stopSpeech = (message = "") => {
+    speechSessionRef.current += 1;
+    if (speechSupported) window.speechSynthesis.cancel();
+    speechQueueRef.current = [];
+    speechIndexRef.current = 0;
+    setSpeechStatus("idle");
+    setSpeechMessage(message);
+  };
+
+  const speakNextChunk = (session: number) => {
+    if (!speechSupported || session !== speechSessionRef.current) return;
+    const text = speechQueueRef.current[speechIndexRef.current];
+    if (!text) {
+      speechQueueRef.current = [];
+      setSpeechStatus("idle");
+      setSpeechMessage("本章朗读完成");
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = speechRateRef.current;
+    utterance.lang = /[\u3400-\u9fff]/.test(text) ? "zh-CN" : "en-US";
+    utterance.onend = () => {
+      if (session !== speechSessionRef.current) return;
+      speechIndexRef.current += 1;
+      speakNextChunk(session);
+    };
+    utterance.onerror = (event) => {
+      if (session !== speechSessionRef.current || event.error === "canceled" || event.error === "interrupted") return;
+      stopSpeech("朗读暂时不可用，请稍后重试");
+    };
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const startSpeech = () => {
+    if (!speechSupported) {
+      setSpeechMessage("当前浏览器不支持朗读，请使用最新版 Chrome 或桌面版");
+      return;
+    }
+    const progress = isFidelity
+      ? chapterPageIndex / Math.max(1, currentChapterPageCount)
+      : scrollProgress;
+    const readableText = isFidelity
+      ? iframeRef.current?.contentDocument?.body?.innerText || ""
+      : chapter.content;
+    const chunks = createSpeechChunks(readableText, progress);
+    if (!chunks.length) {
+      setSpeechMessage("当前章节没有可朗读的文字");
+      return;
+    }
+
+    speechSessionRef.current += 1;
+    window.speechSynthesis.cancel();
+    speechQueueRef.current = chunks;
+    speechIndexRef.current = 0;
+    setSpeechMessage("从当前阅读位置开始朗读");
+    setSpeechStatus("playing");
+    speakNextChunk(speechSessionRef.current);
+  };
+
+  const toggleSpeech = () => {
+    if (speechStatus === "playing") {
+      window.speechSynthesis.pause();
+      setSpeechStatus("paused");
+      setSpeechMessage("已暂停");
+    } else if (speechStatus === "paused") {
+      window.speechSynthesis.resume();
+      setSpeechStatus("playing");
+      setSpeechMessage("继续朗读");
+    } else {
+      startSpeech();
+    }
+  };
+
+  const changeSpeechRate = (change: number) => {
+    setSpeechRate((rate) => {
+      const next = Math.round(Math.min(2, Math.max(0.5, rate + change)) * 100) / 100;
+      saveSpeechRate(next);
+      return next;
+    });
+    if (speechStatus !== "idle") setSpeechMessage("新语速将在下一句生效");
+  };
+
   useEffect(() => {
     if (isFidelity) setScrollProgress(fidelityProgress);
   }, [isFidelity, fidelityProgress]);
+
+  useEffect(() => {
+    speechSessionRef.current += 1;
+    if (speechSupported) window.speechSynthesis.cancel();
+    speechQueueRef.current = [];
+    speechIndexRef.current = 0;
+    setSpeechStatus("idle");
+    setSpeechMessage("");
+  }, [chapterIndex]);
+
+  useEffect(() => () => {
+    speechSessionRef.current += 1;
+    if (speechSupported) window.speechSynthesis.cancel();
+  }, []);
 
   const goToChapter = (targetChapter: number, targetPage: "first" | "last" = "first") => {
     const safeChapter = Math.min(Math.max(targetChapter, 0), book.chapters.length - 1);
@@ -793,6 +939,15 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         </button>
 
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            onClick={() => setShowSpeechControls((show) => !show)}
+            aria-label={speechStatus === "idle" ? "打开朗读" : "打开朗读控制"}
+            aria-expanded={showSpeechControls}
+            className="w-10 h-10 flex items-center justify-center rounded-full"
+            style={{ background: "var(--secondary)" }}
+          >
+            <Volume2 size={18} style={{ color: speechStatus === "idle" ? "var(--muted-foreground)" : "var(--accent)" }} />
+          </button>
           <button
             onClick={() => {
               setShowNotes(true);
@@ -1113,6 +1268,99 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         </div>
         </>
       )}
+
+      <AnimatePresence>
+        {showSpeechControls && (
+          <motion.div
+            key="speech-controls"
+            initial={{ opacity: 0, y: -8, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -8, scale: 0.98 }}
+            transition={{ duration: 0.16 }}
+            role="dialog"
+            aria-label="朗读控制"
+            className="absolute z-40 rounded-2xl"
+            style={{
+              top: "max(66px, calc(env(safe-area-inset-top) + 58px))",
+              right: "12px",
+              width: "min(340px, calc(100% - 24px))",
+              padding: "16px",
+              border: "1px solid var(--border)",
+              background: "var(--card)",
+              boxShadow: "0 12px 36px rgba(58, 46, 32, 0.16)",
+            }}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div style={{ fontFamily: "Lora, serif", fontWeight: 600, fontSize: "16px", color: "var(--foreground)" }}>朗读本章</div>
+                <div style={{ marginTop: "3px", fontFamily: "Inter, sans-serif", fontSize: "11px", color: "var(--muted-foreground)" }}>
+                  从当前阅读位置开始
+                </div>
+              </div>
+              <button
+                onClick={() => setShowSpeechControls(false)}
+                aria-label="关闭朗读控制"
+                className="w-8 h-8 shrink-0 flex items-center justify-center rounded-full"
+                style={{ background: "var(--secondary)" }}
+              >
+                <X size={15} style={{ color: "var(--muted-foreground)" }} />
+              </button>
+            </div>
+
+            <div className="mt-4 flex items-center gap-2">
+              <button
+                onClick={toggleSpeech}
+                aria-label={speechStatus === "playing" ? "暂停朗读" : speechStatus === "paused" ? "继续朗读" : "开始朗读"}
+                className="h-10 flex-1 flex items-center justify-center gap-2 rounded-xl"
+                style={{ background: "var(--accent)", color: "var(--accent-foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px" }}
+              >
+                {speechStatus === "playing" ? <Pause size={16} /> : <Play size={16} />}
+                {speechStatus === "playing" ? "暂停" : speechStatus === "paused" ? "继续" : "开始朗读"}
+              </button>
+              <button
+                onClick={() => stopSpeech("已停止")}
+                disabled={speechStatus === "idle"}
+                aria-label="停止朗读"
+                className="w-10 h-10 shrink-0 flex items-center justify-center rounded-xl transition-opacity disabled:opacity-30"
+                style={{ background: "var(--secondary)" }}
+              >
+                <Square size={14} style={{ color: "var(--foreground)" }} />
+              </button>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <span style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", color: "var(--muted-foreground)" }}>语速</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => changeSpeechRate(-0.25)}
+                  disabled={speechRate <= 0.5}
+                  aria-label="降低语速"
+                  className="w-8 h-8 flex items-center justify-center rounded-full transition-opacity disabled:opacity-30"
+                  style={{ background: "var(--secondary)" }}
+                >
+                  <Minus size={13} style={{ color: "var(--foreground)" }} />
+                </button>
+                <span style={{ width: "44px", textAlign: "center", fontFamily: "Inter, sans-serif", fontSize: "13px", fontWeight: 600, color: "var(--foreground)" }}>
+                  {speechRate.toFixed(2).replace(/\.00$/, ".0")}×
+                </span>
+                <button
+                  onClick={() => changeSpeechRate(0.25)}
+                  disabled={speechRate >= 2}
+                  aria-label="提高语速"
+                  className="w-8 h-8 flex items-center justify-center rounded-full transition-opacity disabled:opacity-30"
+                  style={{ background: "var(--secondary)" }}
+                >
+                  <Plus size={13} style={{ color: "var(--foreground)" }} />
+                </button>
+              </div>
+            </div>
+
+            <div aria-live="polite" style={{ minHeight: "18px", marginTop: "10px", fontFamily: "Inter, sans-serif", fontSize: "11px", color: "var(--muted-foreground)" }}>
+              {speechMessage || (speechSupported ? "使用设备自带的语音朗读" : "当前浏览器不支持朗读")}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Text selection action — keep it separate from the normal reading toolbar. */}
       <AnimatePresence>
