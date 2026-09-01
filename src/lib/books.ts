@@ -22,6 +22,7 @@ export interface Book {
   lastScroll?: number; // 0-1，章节内的阅读位置
   addedAt: number;
   mode?: "text" | "fidelity"; // 缺省按 text 处理；EPUB 为 fidelity（原版渲染）
+  layout?: "reflowable" | "fixed"; // EPUB 排版：文字重排或固定页面（漫画 / 扫描 PDF）
   sourceKey?: string; // 同一来源再次打开时更新现有书籍，避免重复
 }
 
@@ -301,8 +302,13 @@ async function epubToBook(
 
   if (chapters.length === 0) return { error: "无法从这个 EPUB 解析出章节。" };
 
+  const fixedLayout = localTags(opf, "meta").some((meta) => (
+    meta.getAttribute("property") === "rendition:layout"
+    && meta.textContent?.trim() === "pre-paginated"
+  ));
   const book = buildBook(bookTitle, "EPUB", chapters, author, options);
   book.mode = "fidelity";
+  book.layout = fixedLayout ? "fixed" : "reflowable";
   // 原始文件存入 IndexedDB，供原版渲染反复读取
   await putFile(book.id, file);
   return { book };

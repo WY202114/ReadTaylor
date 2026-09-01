@@ -15,6 +15,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import type { Book } from "../lib/books";
 import { renderChapter, resolveInternalIndex, cleanup as cleanupEpub } from "../lib/epubRender";
+import { paginateFrame, scrollFrameToPage } from "../lib/epubPagination";
 
 interface ReaderViewProps {
   book: Book;
@@ -23,27 +24,53 @@ interface ReaderViewProps {
   onToggleDark: () => void;
 }
 
+type PendingPage =
+  | { chapterIndex: number; mode: "first" | "last" }
+  | { chapterIndex: number; mode: "progress"; progress: number };
+
+function clampProgress(value: number): number {
+  return Math.min(Math.max(value || 0, 0), 1);
+}
+
 export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewProps) {
   const initialChapterIndex = Math.min(book.lastChapter || 0, book.chapters.length - 1);
+  const initialProgress = clampProgress(book.lastScroll || 0);
+  const isFidelity = book.mode === "fidelity";
+  const fixedLayout = isFidelity && book.layout === "fixed";
   const [chapterIndex, setChapterIndex] = useState(initialChapterIndex);
+  const [chapterPageIndex, setChapterPageIndex] = useState(0);
+  const [chapterPageCounts, setChapterPageCounts] = useState<Array<number | null>>(() => (
+    fixedLayout ? book.chapters.map(() => 1) : book.chapters.map(() => null)
+  ));
+  const [measurementIndex, setMeasurementIndex] = useState(fixedLayout ? -1 : 0);
+  const [measurementSrcdoc, setMeasurementSrcdoc] = useState("");
+  const [layoutRevision, setLayoutRevision] = useState(0);
   const [fontSize, setFontSize] = useState(18);
   const [showToolbar, setShowToolbar] = useState(false);
   const [bookmarks, setBookmarks] = useState<Set<string>>(new Set());
   const [showChapters, setShowChapters] = useState(false);
-  const [scrollProgress, setScrollProgress] = useState(
-    Math.min(Math.max(book.lastScroll || 0, 0), 1)
-  );
+  const [scrollProgress, setScrollProgress] = useState(initialProgress);
   const contentRef = useRef<HTMLDivElement>(null);
   const restorePositionRef = useRef({
     chapterIndex: initialChapterIndex,
-    progress: Math.min(Math.max(book.lastScroll || 0, 0), 1),
+    progress: initialProgress,
   });
-
-  const isFidelity = book.mode === "fidelity";
+  const pendingPageRef = useRef<PendingPage>({
+    chapterIndex: initialChapterIndex,
+    mode: "progress",
+    progress: initialProgress,
+  });
+  const paginationPositionRef = useRef({
+    chapterIndex: initialChapterIndex,
+    pageIndex: 0,
+    pageCount: 1,
+  });
   const [srcdoc, setSrcdoc] = useState("");
   const [rendering, setRendering] = useState(isFidelity);
   const [renderError, setRenderError] = useState("");
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const measurementIframeRef = useRef<HTMLIFrameElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
 
   const chapter = book.chapters[chapterIndex];
   const bookmarkKey = `${book.id}-${chapter.id}`;
@@ -57,49 +84,231 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     setRenderError("");
     renderChapter(book, chapterIndex)
       .then((html) => !cancelled && setSrcdoc(html))
-      .catch((e) => !cancelled && setRenderError(String(e?.message || e)))
-      .finally(() => !cancelled && setRendering(false));
+      .catch((e) => {
+        if (!cancelled) {
+          setRenderError(String(e?.message || e));
+          setRendering(false);
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [isFidelity, book, chapterIndex]);
+  }, [isFidelity, book, chapterIndex, layoutRevision]);
+
+  // 在不可见但与阅读区同尺寸的 iframe 中逐章排版，得到真实的全书总页数。
+  useEffect(() => {
+    if (!isFidelity || fixedLayout || measurementIndex < 0) return;
+    let cancelled = false;
+    setMeasurementSrcdoc("");
+    renderChapter(book, measurementIndex)
+      .then((html) => !cancelled && setMeasurementSrcdoc(html))
+      .catch(() => {
+        if (!cancelled) {
+          setChapterPageCounts((previous) => {
+            const next = [...previous];
+            next[measurementIndex] = 1;
+            return next;
+          });
+          setMeasurementIndex((index) => (
+            index + 1 < book.chapters.length ? index + 1 : -1
+          ));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFidelity, fixedLayout, measurementIndex, book, layoutRevision]);
+
+  const onMeasurementLoad = async () => {
+    const frame = measurementIframeRef.current;
+    const measuredChapter = measurementIndex;
+    if (!frame || measuredChapter < 0) return;
+    const { pageCount } = await paginateFrame(frame, false);
+    if (measuredChapter !== measurementIndex) return;
+    setChapterPageCounts((previous) => {
+      const next = [...previous];
+      next[measuredChapter] = pageCount;
+      return next;
+    });
+    setMeasurementIndex(
+      measuredChapter + 1 < book.chapters.length ? measuredChapter + 1 : -1
+    );
+  };
+
+  // 窗口尺寸改变后页数会变化；保留当前章节内的相对位置并重新计算全书页码。
+  useEffect(() => {
+    if (!isFidelity || !viewportRef.current) return;
+    let previousSize = "";
+    let resizeTimer = 0;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      const nextSize = `${width}x${height}`;
+      if (!width || !height || nextSize === previousSize) return;
+      if (!previousSize) {
+        previousSize = nextSize;
+        return;
+      }
+      previousSize = nextSize;
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        const position = paginationPositionRef.current;
+        pendingPageRef.current = {
+          chapterIndex: position.chapterIndex,
+          mode: "progress",
+          progress: position.pageCount > 1
+            ? position.pageIndex / (position.pageCount - 1)
+            : 0,
+        };
+        setChapterPageIndex(0);
+        setChapterPageCounts(
+          fixedLayout ? book.chapters.map(() => 1) : book.chapters.map(() => null)
+        );
+        setMeasurementIndex(fixedLayout ? -1 : 0);
+        setMeasurementSrcdoc("");
+        setLayoutRevision((value) => value + 1);
+      }, 180);
+    });
+    observer.observe(viewportRef.current);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(resizeTimer);
+    };
+  }, [isFidelity, fixedLayout, book.id, book.chapters.length]);
 
   // 离开阅读器时回收 EPUB 的 blob URL
   useEffect(() => () => cleanupEpub(), []);
 
-  const onIframeLoad = () => {
-    const cdoc = iframeRef.current?.contentDocument;
-    const cwin = iframeRef.current?.contentWindow;
+  const onIframeLoad = async () => {
+    const frame = iframeRef.current;
+    const cdoc = frame?.contentDocument;
+    const cwin = frame?.contentWindow;
     if (!cdoc || !cwin) return;
-    setScrollProgress(0);
-    const onScroll = () => {
-      const el = cdoc.scrollingElement || cdoc.documentElement;
-      const max = el.scrollHeight - el.clientHeight;
-      setScrollProgress(max > 0 ? el.scrollTop / max : 0);
-    };
-    cwin.addEventListener("scroll", onScroll);
-    const saved = restorePositionRef.current;
-    if (saved && saved.chapterIndex === chapterIndex) {
-      restorePositionRef.current = { chapterIndex: -1, progress: 0 };
-      window.requestAnimationFrame(() => {
-        const el = cdoc.scrollingElement || cdoc.documentElement;
-        cwin.scrollTo(0, Math.max(0, el.scrollHeight - el.clientHeight) * saved.progress);
-        onScroll();
-      });
+    const { pageCount } = await paginateFrame(frame, fixedLayout);
+    setChapterPageCounts((previous) => {
+      const next = [...previous];
+      next[chapterIndex] = pageCount;
+      return next;
+    });
+
+    const pending = pendingPageRef.current;
+    let targetPage = Math.min(chapterPageIndex, pageCount - 1);
+    if (pending.chapterIndex === chapterIndex) {
+      if (pending.mode === "last") targetPage = pageCount - 1;
+      else if (pending.mode === "first") targetPage = 0;
+      else if (pending.mode === "progress") {
+        targetPage = Math.round((pageCount - 1) * pending.progress);
+      }
+      pendingPageRef.current = { chapterIndex: -1, mode: "first" };
     }
+    setChapterPageIndex(targetPage);
+    scrollFrameToPage(frame, targetPage);
+    setRendering(false);
+
     cdoc.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement)?.closest?.("a");
       if (a) {
         e.preventDefault();
         const href = a.getAttribute("href") || "";
         const idx = resolveInternalIndex(book, chapterIndex, href);
-        if (idx != null) setChapterIndex(idx);
+        if (idx != null) {
+          if (idx === chapterIndex) {
+            setChapterPageIndex(0);
+            scrollFrameToPage(frame, 0);
+          } else {
+            pendingPageRef.current = { chapterIndex: idx, mode: "first" };
+            setChapterPageIndex(0);
+            setChapterIndex(idx);
+          }
+        }
         else if (/^https?:/i.test(href)) window.open(href, "_blank", "noopener");
         return;
       }
       setShowToolbar((v) => !v);
     });
   };
+
+  useEffect(() => {
+    if (isFidelity) scrollFrameToPage(iframeRef.current, chapterPageIndex);
+  }, [isFidelity, chapterPageIndex]);
+
+  const currentChapterPageCount = chapterPageCounts[chapterIndex] || 1;
+  paginationPositionRef.current = {
+    chapterIndex,
+    pageIndex: chapterPageIndex,
+    pageCount: currentChapterPageCount,
+  };
+  const pagesBeforeAreReady = chapterPageCounts
+    .slice(0, chapterIndex)
+    .every((count) => count != null);
+  const currentGlobalPage = pagesBeforeAreReady
+    ? chapterPageCounts.slice(0, chapterIndex).reduce<number>(
+      (sum, count) => sum + (count || 0),
+      0
+    )
+      + chapterPageIndex
+      + 1
+    : null;
+  const totalPagesReady = chapterPageCounts.every((count) => count != null);
+  const totalPages = totalPagesReady
+    ? chapterPageCounts.reduce<number>((sum, count) => sum + (count || 0), 0)
+    : null;
+  const pageLabel = currentGlobalPage != null && totalPages != null
+    ? `${currentGlobalPage} / ${totalPages}`
+    : currentGlobalPage != null
+      ? `${currentGlobalPage} / 计算中…`
+      : "正在计算全书页码…";
+  const fidelityProgress = currentGlobalPage != null && totalPages != null
+    ? totalPages > 1 ? (currentGlobalPage - 1) / (totalPages - 1) : 1
+    : (chapterIndex + chapterPageIndex / currentChapterPageCount) / book.chapters.length;
+
+  useEffect(() => {
+    if (isFidelity) setScrollProgress(fidelityProgress);
+  }, [isFidelity, fidelityProgress]);
+
+  const goToChapter = (targetChapter: number, targetPage: "first" | "last" = "first") => {
+    const safeChapter = Math.min(Math.max(targetChapter, 0), book.chapters.length - 1);
+    if (safeChapter === chapterIndex) {
+      const nextPage = targetPage === "last" ? currentChapterPageCount - 1 : 0;
+      setChapterPageIndex(nextPage);
+      return;
+    }
+    pendingPageRef.current = { chapterIndex: safeChapter, mode: targetPage };
+    setChapterPageIndex(0);
+    setChapterIndex(safeChapter);
+  };
+
+  const goToPreviousPage = () => {
+    if (rendering) return;
+    if (chapterPageIndex > 0) setChapterPageIndex((page) => page - 1);
+    else if (chapterIndex > 0) goToChapter(chapterIndex - 1, "last");
+  };
+
+  const goToNextPage = () => {
+    if (rendering) return;
+    if (chapterPageIndex + 1 < currentChapterPageCount) {
+      setChapterPageIndex((page) => page + 1);
+    } else if (chapterIndex + 1 < book.chapters.length) {
+      goToChapter(chapterIndex + 1, "first");
+    }
+  };
+
+  useEffect(() => {
+    if (!isFidelity) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input,textarea,select,[contenteditable='true']")) return;
+      if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        goToPreviousPage();
+      } else if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
+        event.preventDefault();
+        goToNextPage();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   useEffect(() => {
     const el = contentRef.current;
@@ -153,7 +362,14 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         style={{ borderBottom: "1px solid var(--border)" }}
       >
         <button
-          onClick={() => onBack(chapterIndex, scrollProgress)}
+          onClick={() => onBack(
+            chapterIndex,
+            isFidelity
+              ? currentChapterPageCount > 1
+                ? chapterPageIndex / (currentChapterPageCount - 1)
+                : 0
+              : scrollProgress
+          )}
           className="w-9 h-9 flex items-center justify-center rounded-full transition-colors"
           style={{ background: "var(--secondary)" }}
         >
@@ -202,7 +418,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       {/* Content — 原版（EPUB iframe）或文本模式 */}
       {isFidelity ? (
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 relative overflow-hidden">
+          <div ref={viewportRef} className="flex-1 relative overflow-hidden">
             {renderError ? (
               <div
                 className="absolute inset-0 flex items-center justify-center px-8 text-center"
@@ -212,12 +428,34 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               </div>
             ) : (
               <iframe
+                key={`${book.id}-${chapterIndex}-${layoutRevision}`}
                 ref={iframeRef}
                 title={chapter.title}
                 srcDoc={srcdoc}
                 onLoad={onIframeLoad}
                 sandbox="allow-same-origin"
                 style={{ width: "100%", height: "100%", border: "none", background: "#faf6ef", display: "block" }}
+              />
+            )}
+            {!fixedLayout && measurementIndex >= 0 && measurementSrcdoc && (
+              <iframe
+                key={`measure-${book.id}-${measurementIndex}-${layoutRevision}`}
+                ref={measurementIframeRef}
+                title="计算全书页码"
+                srcDoc={measurementSrcdoc}
+                onLoad={onMeasurementLoad}
+                sandbox="allow-same-origin"
+                aria-hidden="true"
+                tabIndex={-1}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  border: "none",
+                  visibility: "hidden",
+                  pointerEvents: "none",
+                }}
               />
             )}
             {rendering && !renderError && (
@@ -230,29 +468,32 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             )}
           </div>
 
-          {/* 原版模式：常驻翻章条 */}
+          {/* 原版模式：按全书实际排版页数翻页 */}
           <div
             className="flex items-center justify-between px-4 py-2"
             style={{ borderTop: "1px solid var(--border)", background: "var(--card)" }}
           >
             <button
-              onClick={() => setChapterIndex((i) => Math.max(0, i - 1))}
-              disabled={chapterIndex === 0}
+              onClick={goToPreviousPage}
+              disabled={rendering || (chapterIndex === 0 && chapterPageIndex === 0)}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg transition-opacity disabled:opacity-30"
               style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px" }}
             >
-              <ChevronLeft size={15} /> 上一章
+              <ChevronLeft size={15} /> 上一页
             </button>
             <span style={{ color: "var(--muted-foreground)", fontFamily: "Inter, sans-serif", fontSize: "12px" }}>
-              {chapterIndex + 1} / {book.chapters.length}
+              {pageLabel}
             </span>
             <button
-              onClick={() => setChapterIndex((i) => Math.min(book.chapters.length - 1, i + 1))}
-              disabled={chapterIndex === book.chapters.length - 1}
+              onClick={goToNextPage}
+              disabled={rendering || (
+                chapterIndex === book.chapters.length - 1
+                && chapterPageIndex >= currentChapterPageCount - 1
+              )}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg transition-opacity disabled:opacity-30"
               style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px" }}
             >
-              下一章 <ChevronRight size={15} />
+              下一页 <ChevronRight size={15} />
             </button>
           </div>
         </div>
@@ -423,7 +664,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                   <button
                     key={ch.id}
                     onClick={() => {
-                      setChapterIndex(i);
+                      goToChapter(i, "first");
                       setShowChapters(false);
                     }}
                     className="w-full flex items-center gap-3 px-5 py-3.5 text-left transition-colors"

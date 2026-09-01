@@ -95,6 +95,188 @@ async function main() {
       mode: book.mode || "text",
     }));
     console.log(JSON.stringify(summary, null, 2));
+
+    if (process.env.READTAYLOR_CHECK_PAGINATION === "1") {
+      const opened = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const title = "ReadTaylor 原样排版测试书";
+          const button = [...document.querySelectorAll("button")]
+            .find((item) => item.textContent.includes(title));
+          if (!button) return false;
+          button.click();
+          return true;
+        })()`,
+        returnByValue: true,
+      });
+      if (!opened.result.value) throw new Error("Pagination test book could not be opened.");
+
+      let pagination = null;
+      for (let attempt = 0; attempt < 80; attempt++) {
+        await delay(150);
+        const result = await command("Runtime.evaluate", {
+          expression: `(() => {
+            const lines = document.body.innerText.split("\\n").map((line) => line.trim());
+            const label = lines.find((line) => (
+              line.includes(" / ")
+              && !line.includes("计算中")
+              && Number.isFinite(Number(line.split(" / ")[0]))
+              && Number.isFinite(Number(line.split(" / ")[1]))
+            ));
+            const frame = [...document.querySelectorAll("iframe")]
+              .find((item) => item.style.visibility !== "hidden");
+            if (!label || !frame?.contentDocument) return null;
+            const scrolling = frame.contentDocument.scrollingElement || frame.contentDocument.documentElement;
+            return {
+              label,
+              previousLabel: lines.includes("上一页"),
+              nextLabel: lines.includes("下一页"),
+              clientWidth: scrolling.clientWidth,
+              scrollWidth: scrolling.scrollWidth,
+              clientHeight: scrolling.clientHeight,
+              scrollHeight: scrolling.scrollHeight,
+              scrollX: frame.contentWindow.scrollX,
+              scrollY: frame.contentWindow.scrollY,
+            };
+          })()`,
+          returnByValue: true,
+        });
+        pagination = result.result.value;
+        if (pagination) break;
+      }
+      if (!pagination) {
+        const diagnostic = await command("Runtime.evaluate", {
+          expression: `({
+            text: document.body.innerText.slice(-800),
+            frames: [...document.querySelectorAll("iframe")].map((frame) => ({
+              title: frame.title,
+              visibility: frame.style.visibility,
+              width: frame.clientWidth,
+              height: frame.clientHeight,
+              loaded: Boolean(frame.contentDocument?.body),
+            })),
+          })`,
+          returnByValue: true,
+        });
+        throw new Error(
+          `Whole-book page count did not finish calculating. `
+          + `Diagnostic: ${JSON.stringify(diagnostic.result.value)} `
+          + `Console: ${consoleMessages.join(" | ")}`
+        );
+      }
+      const [firstPage, totalPages] = pagination.label.split(" / ").map(Number);
+      if (firstPage !== 1 || totalPages <= 2 || !pagination.previousLabel || !pagination.nextLabel) {
+        throw new Error(`Unexpected pagination state: ${JSON.stringify(pagination)}`);
+      }
+      if (pagination.scrollHeight > pagination.clientHeight + 2 || pagination.scrollY !== 0) {
+        throw new Error(`Reader still scrolls vertically: ${JSON.stringify(pagination)}`);
+      }
+
+      await command("Runtime.evaluate", {
+        expression: `([...document.querySelectorAll("button")]
+          .find((item) => item.textContent.includes("下一页")))?.click()`,
+      });
+      await delay(250);
+      const afterTurn = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const lines = document.body.innerText.split("\\n").map((line) => line.trim());
+          const frame = [...document.querySelectorAll("iframe")]
+            .find((item) => item.style.visibility !== "hidden");
+          return {
+            label: lines.find((line) => (
+              line.includes(" / ")
+              && Number.isFinite(Number(line.split(" / ")[0]))
+              && Number.isFinite(Number(line.split(" / ")[1]))
+            )) || "",
+            scrollX: frame?.contentWindow?.scrollX || 0,
+            scrollY: frame?.contentWindow?.scrollY || 0,
+          };
+        })()`,
+        returnByValue: true,
+      });
+      if (!afterTurn.result.value.label.startsWith("2 / ") || afterTurn.result.value.scrollX <= 0) {
+        throw new Error(`Next page did not advance horizontally: ${JSON.stringify(afterTurn.result.value)}`);
+      }
+      const firstChapterPages = Math.max(1, Math.round(pagination.scrollWidth / pagination.clientWidth));
+      for (let page = 1; page < firstChapterPages; page++) {
+        await command("Runtime.evaluate", {
+          expression: `([...document.querySelectorAll("button")]
+            .find((item) => item.textContent.includes("下一页")))?.click()`,
+        });
+        await delay(120);
+      }
+      let afterChapterTurn = null;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await delay(120);
+        const result = await command("Runtime.evaluate", {
+          expression: `(() => {
+            const lines = document.body.innerText.split("\\n").map((line) => line.trim());
+            return {
+              label: lines.find((line) => (
+                line.includes(" / ")
+                && Number.isFinite(Number(line.split(" / ")[0]))
+                && Number.isFinite(Number(line.split(" / ")[1]))
+              )) || "",
+              chapterTitle: lines[0] || "",
+            };
+          })()`,
+          returnByValue: true,
+        });
+        afterChapterTurn = result.result.value;
+        if (afterChapterTurn.chapterTitle.includes("第二章")) break;
+      }
+      if (
+        !afterChapterTurn?.chapterTitle.includes("第二章")
+        || !afterChapterTurn.label.startsWith(`${firstChapterPages + 1} / `)
+      ) {
+        throw new Error(`Page turn did not cross the chapter boundary: ${JSON.stringify(afterChapterTurn)}`);
+      }
+      console.log(JSON.stringify({
+        pagination,
+        afterTurn: afterTurn.result.value,
+        afterChapterTurn,
+      }, null, 2));
+    }
+
+    if (process.env.READTAYLOR_CHECK_FIXED_PAGINATION === "1") {
+      const opened = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const button = [...document.querySelectorAll("button")]
+            .find((item) => item.textContent.includes("test"));
+          if (!button) return false;
+          button.click();
+          return true;
+        })()`,
+        returnByValue: true,
+      });
+      if (!opened.result.value) throw new Error("Fixed-layout test book could not be opened.");
+
+      let firstLabel = "";
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await delay(120);
+        const result = await command("Runtime.evaluate", {
+          expression: `document.body.innerText.split("\\n")
+            .map((line) => line.trim()).find((line) => line === "1 / 2") || ""`,
+          returnByValue: true,
+        });
+        firstLabel = result.result.value;
+        if (firstLabel) break;
+      }
+      if (firstLabel !== "1 / 2") throw new Error("Fixed-layout total page count is incorrect.");
+      await command("Runtime.evaluate", {
+        expression: `([...document.querySelectorAll("button")]
+          .find((item) => item.textContent.includes("下一页")))?.click()`,
+      });
+      await delay(250);
+      const secondLabel = await command("Runtime.evaluate", {
+        expression: `document.body.innerText.split("\\n")
+          .map((line) => line.trim()).find((line) => line === "2 / 2") || ""`,
+        returnByValue: true,
+      });
+      if (secondLabel.result.value !== "2 / 2") {
+        throw new Error(`Fixed-layout next page is incorrect: ${secondLabel.result.value}`);
+      }
+      console.log(JSON.stringify({ fixedLayout: [firstLabel, secondLabel.result.value] }, null, 2));
+    }
   } finally {
     await command("Browser.close").catch(() => undefined);
     socket.close();
