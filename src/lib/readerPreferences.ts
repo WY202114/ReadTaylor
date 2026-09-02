@@ -1,5 +1,6 @@
 const FONT_SIZE_KEY = "readtaylor.fontSizes.v1";
 const SPEECH_RATE_KEY = "readtaylor.speechRate.v1";
+const TRANSLATION_LANGUAGE_KEY = "readtaylor.translationLanguage.v1";
 
 function loadFontSizes(): Record<string, number> {
   try {
@@ -50,5 +51,21 @@ export function saveSpeechRate(rate: number): void {
     localStorage.setItem(SPEECH_RATE_KEY, String(safeRate));
   } catch {
     // 偏好保存失败不应影响正常朗读。
+  }
+}
+
+export function loadTranslationLanguage(): string {
+  try {
+    return localStorage.getItem(TRANSLATION_LANGUAGE_KEY) || "zh-Hans";
+  } catch {
+    return "zh-Hans";
+  }
+}
+
+export function saveTranslationLanguage(language: string): void {
+  try {
+    localStorage.setItem(TRANSLATION_LANGUAGE_KEY, language);
+  } catch {
+    // 偏好保存失败不应影响正常翻译。
   }
 }

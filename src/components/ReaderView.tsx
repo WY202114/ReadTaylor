@@ -18,6 +18,8 @@ import {
   Play,
   Square,
   Volume2,
+  Languages,
+  LoaderCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import type { Book } from "../lib/books";
@@ -28,9 +30,17 @@ import { loadPaginationCache, savePaginationCache } from "../lib/paginationCache
 import {
   loadBookFontSize,
   loadSpeechRate,
+  loadTranslationLanguage,
   saveBookFontSize,
   saveSpeechRate,
+  saveTranslationLanguage,
 } from "../lib/readerPreferences";
+import {
+  loadCachedTranslation,
+  requestTranslation,
+  saveCachedTranslation,
+  TRANSLATION_LANGUAGES,
+} from "../lib/translation";
 
 interface ReaderViewProps {
   book: Book;
@@ -72,6 +82,11 @@ type ActiveNoteRange = {
   note: ReadingNote;
   startOffset: number;
   endOffset: number;
+};
+
+type VisibleTranslationSource = {
+  text: string;
+  pageKey: string;
 };
 
 const NOTE_COLORS: Array<{ id: NoteColor; label: string; hex: string; fill: string }> = [
@@ -233,6 +248,65 @@ function createSpeechChunks(text: string, progress: number): string[] {
   return chunks;
 }
 
+function usesTouchSelection(): boolean {
+  if (typeof window === "undefined") return false;
+  if (typeof window.matchMedia === "function") return window.matchMedia("(pointer: coarse)").matches;
+  return navigator.maxTouchPoints > 0;
+}
+
+function intersectsViewport(rect: DOMRect, viewport: DOMRect): boolean {
+  return rect.width > 0
+    && rect.height > 0
+    && rect.right > viewport.left
+    && rect.left < viewport.right
+    && rect.bottom > viewport.top
+    && rect.top < viewport.bottom;
+}
+
+function visibleTextFromRoot(doc: Document, root: Node, viewport: DOMRect, maxLength = 6000): string {
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!node.textContent?.trim() || !parent) return NodeFilter.FILTER_REJECT;
+      if (parent.closest("script, style, noscript, button, [aria-hidden='true']")) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const pieces: string[] = [];
+  let length = 0;
+  let node = walker.nextNode() as Text | null;
+
+  while (node && length < maxLength) {
+    const value = node.data;
+    const range = doc.createRange();
+    range.selectNodeContents(node);
+    const rects = Array.from(range.getClientRects());
+    const visibleRects = rects.filter((rect) => intersectsViewport(rect, viewport));
+    let visible = "";
+
+    if (visibleRects.length === rects.length && rects.length > 0) {
+      visible = value;
+    } else if (visibleRects.length > 0) {
+      // 只在跨页的边界文本上逐字判断，避免把下一页的半段文字带入译文。
+      for (let index = 0; index < value.length && length + visible.length < maxLength; index += 1) {
+        range.setStart(node, index);
+        range.setEnd(node, index + 1);
+        if (Array.from(range.getClientRects()).some((rect) => intersectsViewport(rect, viewport))) {
+          visible += value[index];
+        }
+      }
+    }
+
+    const normalized = visible.replace(/\s+/g, " ").trim();
+    if (normalized) {
+      pieces.push(normalized);
+      length += normalized.length + 1;
+    }
+    node = walker.nextNode() as Text | null;
+  }
+  return pieces.join("\n").slice(0, maxLength).trim();
+}
+
 export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewProps) {
   const initialChapterIndex = Math.min(book.lastChapter || 0, book.chapters.length - 1);
   const initialProgress = clampProgress(book.lastScroll || 0);
@@ -259,6 +333,12 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const [speechRate, setSpeechRate] = useState(loadSpeechRate);
   const [speechStatus, setSpeechStatus] = useState<"idle" | "playing" | "paused">("idle");
   const [speechMessage, setSpeechMessage] = useState("");
+  const [translationLanguage, setTranslationLanguage] = useState(loadTranslationLanguage);
+  const [translationVisible, setTranslationVisible] = useState(false);
+  const [translationLoading, setTranslationLoading] = useState(false);
+  const [translationText, setTranslationText] = useState("");
+  const [translationError, setTranslationError] = useState("");
+  const [translationDetectedLanguage, setTranslationDetectedLanguage] = useState("");
   const contentRef = useRef<HTMLDivElement>(null);
   const restorePositionRef = useRef({
     chapterIndex: initialChapterIndex,
@@ -275,6 +355,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     pageCount: 1,
   });
   const [srcdoc, setSrcdoc] = useState("");
+  const [srcdocRevision, setSrcdocRevision] = useState(0);
   const [rendering, setRendering] = useState(isFidelity);
   const [renderError, setRenderError] = useState("");
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -289,6 +370,9 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const speechIndexRef = useRef(0);
   const speechSessionRef = useRef(0);
   const speechRateRef = useRef(speechRate);
+  const mobileSelectionTimerRef = useRef<number | undefined>(undefined);
+  const translationRequestRef = useRef<AbortController | null>(null);
+  const translationSourceRef = useRef<VisibleTranslationSource | null>(null);
   fontSizeRef.current = fontSize;
   speechRateRef.current = speechRate;
 
@@ -301,7 +385,13 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     setRendering(true);
     setRenderError("");
     renderChapter(book, chapterIndex)
-      .then((html) => !cancelled && setSrcdoc(html))
+      .then((html) => {
+        if (!cancelled) {
+          setSrcdoc(html);
+          // Chromium 偶尔只更新 srcdoc 属性却不重载内容，改变 key 可确保章节真正切换。
+          setSrcdocRevision((revision) => revision + 1);
+        }
+      })
       .catch((e) => {
         if (!cancelled) {
           setRenderError(String(e?.message || e));
@@ -448,14 +538,38 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
 
   useEffect(() => () => window.clearTimeout(feedbackTimerRef.current), []);
 
+  useEffect(() => () => {
+    window.clearTimeout(mobileSelectionTimerRef.current);
+    translationRequestRef.current?.abort();
+  }, []);
+
   useEffect(() => {
     setSelectionTarget(null);
+    setTranslationVisible(false);
+    setTranslationError("");
+    translationRequestRef.current?.abort();
   }, [chapterIndex, chapterPageIndex]);
 
   const flashNoteFeedback = (message: string) => {
     setNoteFeedback(message);
     window.clearTimeout(feedbackTimerRef.current);
     feedbackTimerRef.current = window.setTimeout(() => setNoteFeedback(""), 2200);
+  };
+
+  const openNoteComposerForSelection = (selected: SelectionTarget) => {
+    setNoteComposer({
+      quote: selected.text,
+      body: "",
+      chapterId: selected.chapterId,
+      chapterTitle: selected.chapterTitle,
+      pageIndex: selected.pageIndex,
+      color: "yellow",
+      startOffset: selected.startOffset,
+      endOffset: selected.endOffset,
+    });
+    if (selected.source === "iframe") iframeRef.current?.contentWindow?.getSelection()?.removeAllRanges();
+    else window.getSelection()?.removeAllRanges();
+    setSelectionTarget(null);
   };
 
   const captureSelection = (
@@ -489,7 +603,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     const y = bottom + 58 < window.innerHeight ? bottom + 10 : Math.max(10, top - 50);
     const { startOffset, endOffset } = getRangeOffsets(root, range, text);
 
-    setSelectionTarget({
+    const selected: SelectionTarget = {
       text: text.slice(0, 5000),
       x,
       y,
@@ -499,7 +613,9 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       pageIndex: isFidelity ? chapterPageIndex : undefined,
       startOffset,
       endOffset,
-    });
+    };
+    if (usesTouchSelection()) openNoteComposerForSelection(selected);
+    else setSelectionTarget(selected);
     return true;
   };
 
@@ -511,26 +627,24 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     ));
   };
 
-  const clearBrowserSelection = (source: SelectionTarget["source"]) => {
-    if (source === "iframe") iframeRef.current?.contentWindow?.getSelection()?.removeAllRanges();
-    else window.getSelection()?.removeAllRanges();
+  const scheduleReaderSelection = () => {
+    window.clearTimeout(mobileSelectionTimerRef.current);
+    mobileSelectionTimerRef.current = window.setTimeout(captureReaderSelection, 320);
   };
+
+  useEffect(() => {
+    if (isFidelity || !usesTouchSelection()) return;
+    const onSelectionChange = () => {
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed && selection.toString().trim()) scheduleReaderSelection();
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => document.removeEventListener("selectionchange", onSelectionChange);
+  }, [isFidelity, chapterIndex]);
 
   const startNoteFromSelection = () => {
     if (!selectionTarget) return;
-    const selected = selectionTarget;
-    setNoteComposer({
-      quote: selected.text,
-      body: "",
-      chapterId: selected.chapterId,
-      chapterTitle: selected.chapterTitle,
-      pageIndex: selected.pageIndex,
-      color: "yellow",
-      startOffset: selected.startOffset,
-      endOffset: selected.endOffset,
-    });
-    clearBrowserSelection(selected.source);
-    setSelectionTarget(null);
+    openNoteComposerForSelection(selectionTarget);
   };
 
   const editNote = (note: ReadingNote) => {
@@ -651,13 +765,24 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         captureSelection(cwin.getSelection(), "iframe", cdoc.body, frameRect.left, frameRect.top);
       });
     };
+    const scheduleIframeSelection = () => {
+      window.clearTimeout(mobileSelectionTimerRef.current);
+      mobileSelectionTimerRef.current = window.setTimeout(captureIframeSelection, 320);
+    };
     cdoc.addEventListener("mouseup", captureIframeSelection);
-    cdoc.addEventListener("touchend", captureIframeSelection);
+    cdoc.addEventListener("touchend", scheduleIframeSelection);
     cdoc.addEventListener("keyup", captureIframeSelection);
+    cdoc.addEventListener("contextmenu", (event) => {
+      if (!usesTouchSelection() || !cwin.getSelection()?.toString().trim()) return;
+      event.preventDefault();
+      scheduleIframeSelection();
+    });
     cdoc.addEventListener("selectionchange", () => {
       const selection = cwin.getSelection();
       if (!selection || selection.isCollapsed || !selection.toString().trim()) {
         setSelectionTarget((current) => current?.source === "iframe" ? null : current);
+      } else if (usesTouchSelection()) {
+        scheduleIframeSelection();
       }
     });
 
@@ -725,6 +850,153 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const fidelityProgress = currentGlobalPage != null && totalPages != null
     ? totalPages > 1 ? (currentGlobalPage - 1) / (totalPages - 1) : 1
     : (chapterIndex + chapterPageIndex / currentChapterPageCount) / book.chapters.length;
+
+  const currentPageTranslationSource = (): VisibleTranslationSource => {
+    if (isFidelity) {
+      const frame = iframeRef.current;
+      const doc = frame?.contentDocument;
+      if (!frame || !doc?.body) return { text: "", pageKey: `${chapterIndex}:${chapterPageIndex}` };
+      const viewport = new DOMRect(0, 0, frame.clientWidth, frame.clientHeight);
+      return {
+        text: visibleTextFromRoot(doc, doc.body, viewport),
+        pageKey: `${chapterIndex}:${chapterPageIndex}`,
+      };
+    }
+    const content = contentRef.current;
+    if (!content) return { text: "", pageKey: `${chapterIndex}:0` };
+    return {
+      text: visibleTextFromRoot(document, content, content.getBoundingClientRect()),
+      pageKey: `${chapterIndex}:${Math.round(scrollProgress * 1000)}`,
+    };
+  };
+
+  const translateSource = async (source: VisibleTranslationSource, targetLanguage: string) => {
+    translationRequestRef.current?.abort();
+    translationSourceRef.current = source;
+    setTranslationVisible(true);
+    setTranslationError("");
+    setTranslationDetectedLanguage("");
+
+    if (!source.text) {
+      setTranslationText("");
+      setTranslationLoading(false);
+      setTranslationError("当前页面没有可翻译的文字");
+      return;
+    }
+
+    const cached = loadCachedTranslation(book.id, chapter.id, source.pageKey, source.text, targetLanguage);
+    if (cached) {
+      setTranslationText(cached.text);
+      setTranslationDetectedLanguage(cached.detectedLanguage || "");
+      setTranslationLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    translationRequestRef.current = controller;
+    setTranslationText("");
+    setTranslationLoading(true);
+    try {
+      const result = await requestTranslation(source.text, targetLanguage, controller.signal);
+      if (translationRequestRef.current !== controller) return;
+      saveCachedTranslation(book.id, chapter.id, source.pageKey, source.text, result);
+      setTranslationText(result.text);
+      setTranslationDetectedLanguage(result.detectedLanguage || "");
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setTranslationError(error instanceof Error ? error.message : "翻译失败，请稍后重试");
+    } finally {
+      if (translationRequestRef.current === controller) {
+        translationRequestRef.current = null;
+        setTranslationLoading(false);
+      }
+    }
+  };
+
+  const toggleCurrentPageTranslation = () => {
+    if (translationVisible) {
+      translationRequestRef.current?.abort();
+      setTranslationVisible(false);
+      return;
+    }
+    void translateSource(currentPageTranslationSource(), translationLanguage);
+  };
+
+  const changeTranslationLanguage = (language: string) => {
+    setTranslationLanguage(language);
+    saveTranslationLanguage(language);
+    const source = translationSourceRef.current;
+    if (translationVisible && source) void translateSource(source, language);
+  };
+
+  const translationOverlay = translationVisible && (
+    <div
+      className="absolute inset-0 z-20 flex flex-col"
+      style={{ background: "var(--background)", color: "var(--foreground)" }}
+      aria-label="当前页译文"
+    >
+      <div
+        className="flex shrink-0 items-center justify-between gap-3"
+        style={{ padding: "12px clamp(16px, 4vw, 28px)", borderBottom: "1px solid var(--border)", background: "var(--card)" }}
+      >
+        <div className="min-w-0">
+          <div style={{ fontFamily: "Lora, serif", fontSize: "15px", fontWeight: 600 }}>当前页译文</div>
+          <div className="truncate" style={{ marginTop: "2px", fontFamily: "Inter, sans-serif", fontSize: "10px", color: "var(--muted-foreground)" }}>
+            {translationDetectedLanguage ? `已识别原文语言：${translationDetectedLanguage}` : "只翻译当前可见页面"}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <select
+            aria-label="选择翻译语言"
+            value={translationLanguage}
+            onChange={(event) => changeTranslationLanguage(event.target.value)}
+            className="h-9 rounded-lg px-2"
+            style={{ border: "1px solid var(--border)", background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "12px" }}
+          >
+            {TRANSLATION_LANGUAGES.map((language) => (
+              <option key={language.code} value={language.code}>{language.label}</option>
+            ))}
+          </select>
+          <button
+            onClick={() => setTranslationVisible(false)}
+            aria-label="关闭译文，查看原文"
+            className="w-9 h-9 flex items-center justify-center rounded-full"
+            style={{ background: "var(--secondary)" }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      </div>
+      <div
+        className="flex-1 overflow-y-auto"
+        style={{ padding: "clamp(24px, 6vw, 64px) clamp(20px, 8vw, 110px)", scrollbarWidth: "none" }}
+      >
+        {translationLoading ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3" style={{ color: "var(--muted-foreground)" }}>
+            <LoaderCircle className="animate-spin" size={24} />
+            <span style={{ fontFamily: "Inter, sans-serif", fontSize: "13px" }}>正在翻译当前页…</span>
+          </div>
+        ) : translationError ? (
+          <div className="flex h-full flex-col items-center justify-center text-center">
+            <p style={{ maxWidth: "420px", fontFamily: "Inter, sans-serif", fontSize: "13px", lineHeight: 1.7, color: "var(--muted-foreground)" }}>
+              {translationError}
+            </p>
+            <button
+              onClick={() => translationSourceRef.current && void translateSource(translationSourceRef.current, translationLanguage)}
+              className="mt-4 h-10 rounded-xl px-5"
+              style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px" }}
+            >
+              重试
+            </button>
+          </div>
+        ) : (
+          <p style={{ margin: 0, whiteSpace: "pre-wrap", fontFamily: "Lora, serif", fontSize: `${fontSize}px`, lineHeight: 1.9, textAlign: "justify" }}>
+            {translationText}
+          </p>
+        )}
+      </div>
+    </div>
+  );
 
   const speechSupported = typeof window !== "undefined"
     && "speechSynthesis" in window
@@ -953,6 +1225,19 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
 
         <div className="flex shrink-0 items-center gap-2">
           <button
+            onClick={toggleCurrentPageTranslation}
+            aria-label={translationVisible ? "关闭译文，查看原文" : "翻译当前页"}
+            aria-pressed={translationVisible}
+            className="w-10 h-10 flex items-center justify-center rounded-full"
+            style={{ background: "var(--secondary)" }}
+          >
+            {translationLoading ? (
+              <LoaderCircle className="animate-spin" size={18} style={{ color: "var(--accent)" }} />
+            ) : (
+              <Languages size={18} style={{ color: translationVisible ? "var(--accent)" : "var(--muted-foreground)" }} />
+            )}
+          </button>
+          <button
             onClick={() => setShowSpeechControls((show) => !show)}
             aria-label={speechStatus === "idle" ? "打开朗读" : "打开朗读控制"}
             aria-expanded={showSpeechControls}
@@ -1026,7 +1311,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               </div>
             ) : (
               <iframe
-                key={`${book.id}-${chapterIndex}-${layoutRevision}`}
+                key={`${book.id}-${chapterIndex}-${layoutRevision}-${srcdocRevision}`}
                 ref={iframeRef}
                 title={chapter.title}
                 srcDoc={srcdoc}
@@ -1064,6 +1349,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 正在渲染原版排版…
               </div>
             )}
+            {translationOverlay}
           </div>
 
           {/* 原版模式：按全书实际排版页数翻页 */}
@@ -1148,16 +1434,22 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         </div>
       ) : (
         <>
+        <div className="flex-1 relative overflow-hidden">
         <div
           ref={contentRef}
-          className="flex-1 overflow-y-auto"
+          className="h-full overflow-y-auto"
           style={{
             scrollbarWidth: "none",
             padding: "clamp(22px, 5vw, 36px) clamp(18px, 7vw, 72px)",
           }}
           onMouseUp={captureReaderSelection}
-          onTouchEnd={captureReaderSelection}
+          onTouchEnd={scheduleReaderSelection}
           onKeyUp={captureReaderSelection}
+          onContextMenu={(event) => {
+            if (!usesTouchSelection() || !window.getSelection()?.toString().trim()) return;
+            event.preventDefault();
+            scheduleReaderSelection();
+          }}
           onClick={(event) => {
             if (window.getSelection()?.toString().trim()) {
               return;
@@ -1228,6 +1520,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               下一章 <ChevronRight size={16} />
             </button>
           </div>
+        </div>
+        {translationOverlay}
         </div>
         <div
           className="flex shrink-0 items-center justify-between gap-3"
