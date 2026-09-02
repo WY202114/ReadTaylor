@@ -89,6 +89,27 @@ type VisibleTranslationSource = {
   pageKey: string;
 };
 
+type CustomSelectionRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type CustomTouchSelection = {
+  doc: Document;
+  root: Node;
+  source: SelectionTarget["source"];
+  originX: number;
+  originY: number;
+  anchorOffset: number | null;
+  startOffset: number;
+  endOffset: number;
+  offsetLeft: number;
+  offsetTop: number;
+  active: boolean;
+};
+
 const NOTE_COLORS: Array<{ id: NoteColor; label: string; hex: string; fill: string }> = [
   { id: "yellow", label: "黄色", hex: "#C58B20", fill: "rgba(236, 190, 76, 0.42)" },
   { id: "orange", label: "橙色", hex: "#C96B2C", fill: "rgba(230, 132, 62, 0.38)" },
@@ -217,6 +238,44 @@ function textOffsetAtPoint(doc: Document, root: Node, x: number, y: number): num
   return before.toString().length;
 }
 
+function isIosWebKitDevice(): boolean {
+  const userAgent = navigator.userAgent || "";
+  const classicIos = /iPad|iPhone|iPod/i.test(userAgent);
+  const desktopModeIpad = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  return classicIos || desktopModeIpad;
+}
+
+function wordRangeAtOffset(text: string, rawOffset: number): { start: number; end: number } | null {
+  if (!text) return null;
+  let index = Math.min(Math.max(rawOffset, 0), text.length - 1);
+  if (/\s/u.test(text[index]) && index > 0 && !/\s/u.test(text[index - 1])) index -= 1;
+
+  const character = text[index];
+  if (/\s/u.test(character)) return null;
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(character)) {
+    return { start: index, end: index + 1 };
+  }
+
+  const isWordCharacter = (value: string) => /[\p{L}\p{N}_'’\-]/u.test(value);
+  if (!isWordCharacter(character)) return { start: index, end: index + 1 };
+  let start = index;
+  let end = index + 1;
+  while (start > 0 && isWordCharacter(text[start - 1])) start -= 1;
+  while (end < text.length && isWordCharacter(text[end])) end += 1;
+  return { start, end };
+}
+
+function selectionRects(range: Range, offsetLeft = 0, offsetTop = 0): CustomSelectionRect[] {
+  return Array.from(range.getClientRects())
+    .filter((rect) => rect.width > 0 && rect.height > 0)
+    .map((rect) => ({
+      left: rect.left + offsetLeft,
+      top: rect.top + offsetTop,
+      width: rect.width,
+      height: rect.height,
+    }));
+}
+
 function clampProgress(value: number): number {
   return Math.min(Math.max(value || 0, 0), 1);
 }
@@ -333,6 +392,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const [translationText, setTranslationText] = useState("");
   const [translationError, setTranslationError] = useState("");
   const [translationDetectedLanguage, setTranslationDetectedLanguage] = useState("");
+  const [customSelectionRects, setCustomSelectionRects] = useState<CustomSelectionRect[]>([]);
   const contentRef = useRef<HTMLDivElement>(null);
   const restorePositionRef = useRef({
     chapterIndex: initialChapterIndex,
@@ -367,12 +427,15 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const mobileSelectionTimerRef = useRef<number | undefined>(undefined);
   const touchSelectionStartedAtRef = useRef(0);
   const touchSelectionActiveRef = useRef(false);
+  const customLongPressTimerRef = useRef<number | undefined>(undefined);
+  const customTouchSelectionRef = useRef<CustomTouchSelection | null>(null);
   const translationRequestRef = useRef<AbortController | null>(null);
   const translationSourceRef = useRef<VisibleTranslationSource | null>(null);
   fontSizeRef.current = fontSize;
   speechRateRef.current = speechRate;
 
   const chapter = book.chapters[chapterIndex];
+  const useCustomIosSelection = isIosWebKitDevice();
 
   // 原版模式：渲染当前章节的原 HTML
   useEffect(() => {
@@ -536,13 +599,17 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
 
   useEffect(() => () => {
     window.clearTimeout(mobileSelectionTimerRef.current);
+    window.clearTimeout(customLongPressTimerRef.current);
     translationRequestRef.current?.abort();
   }, []);
 
   useEffect(() => {
     window.clearTimeout(mobileSelectionTimerRef.current);
+    window.clearTimeout(customLongPressTimerRef.current);
     touchSelectionStartedAtRef.current = 0;
     touchSelectionActiveRef.current = false;
+    customTouchSelectionRef.current = null;
+    setCustomSelectionRects([]);
     setSelectionTarget(null);
     setTranslationVisible(false);
     setTranslationError("");
@@ -571,25 +638,24 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     setSelectionTarget(null);
   };
 
-  const captureSelection = (
-    selection: Selection | null,
+  const captureRange = (
+    range: Range,
     source: SelectionTarget["source"],
     root: Node | null,
     offsetLeft = 0,
     offsetTop = 0,
     autoOpenNote = false
   ) => {
-    const text = selection?.toString().trim() || "";
-    if (!selection || selection.rangeCount === 0 || !text) {
+    const text = range.toString().trim();
+    if (!text) {
       setSelectionTarget((current) => current?.source === source ? null : current);
       return false;
     }
 
     if (!root) return false;
-    const commonAncestor = selection.getRangeAt(0).commonAncestorContainer;
+    const commonAncestor = range.commonAncestorContainer;
     if (!root.contains(commonAncestor)) return false;
 
-    const range = selection.getRangeAt(0);
     const rangeRect = range.getBoundingClientRect();
     const firstRect = range.getClientRects()[0];
     const rect = rangeRect.width || rangeRect.height ? rangeRect : firstRect;
@@ -619,6 +685,28 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     return true;
   };
 
+  const captureSelection = (
+    selection: Selection | null,
+    source: SelectionTarget["source"],
+    root: Node | null,
+    offsetLeft = 0,
+    offsetTop = 0,
+    autoOpenNote = false
+  ) => {
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      setSelectionTarget((current) => current?.source === source ? null : current);
+      return false;
+    }
+    return captureRange(
+      selection.getRangeAt(0),
+      source,
+      root,
+      offsetLeft,
+      offsetTop,
+      autoOpenNote
+    );
+  };
+
   const beginTouchSelection = () => {
     touchSelectionStartedAtRef.current = Date.now();
     touchSelectionActiveRef.current = true;
@@ -632,6 +720,115 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const hasRecentTouchSelection = () => (
     Date.now() - touchSelectionStartedAtRef.current < 5000
   );
+
+  const clearCustomTouchSelection = () => {
+    window.clearTimeout(customLongPressTimerRef.current);
+    customTouchSelectionRef.current = null;
+    setCustomSelectionRects([]);
+  };
+
+  const startCustomTouchSelection = (
+    event: TouchEvent,
+    doc: Document,
+    root: Node,
+    source: SelectionTarget["source"],
+    offsetLeft = 0,
+    offsetTop = 0
+  ) => {
+    if (event.touches.length !== 1) {
+      clearCustomTouchSelection();
+      return;
+    }
+    const touch = event.touches[0];
+    const pending: CustomTouchSelection = {
+      doc,
+      root,
+      source,
+      originX: touch.clientX,
+      originY: touch.clientY,
+      anchorOffset: null,
+      startOffset: 0,
+      endOffset: 0,
+      offsetLeft,
+      offsetTop,
+      active: false,
+    };
+    window.clearTimeout(customLongPressTimerRef.current);
+    customTouchSelectionRef.current = pending;
+    customLongPressTimerRef.current = window.setTimeout(() => {
+      if (customTouchSelectionRef.current !== pending) return;
+      const offset = textOffsetAtPoint(doc, root, pending.originX, pending.originY);
+      const boundary = offset == null ? null : wordRangeAtOffset(root.textContent || "", offset);
+      if (!boundary) {
+        clearCustomTouchSelection();
+        return;
+      }
+      const range = rangeFromOffsets(root, boundary.start, boundary.end);
+      if (!range) {
+        clearCustomTouchSelection();
+        return;
+      }
+      pending.anchorOffset = offset;
+      pending.startOffset = boundary.start;
+      pending.endOffset = boundary.end;
+      pending.active = true;
+      setSelectionTarget(null);
+      doc.defaultView?.getSelection()?.removeAllRanges();
+      setCustomSelectionRects(selectionRects(range, offsetLeft, offsetTop));
+    }, 480);
+  };
+
+  const moveCustomTouchSelection = (event: TouchEvent) => {
+    const current = customTouchSelectionRef.current;
+    const touch = event.touches[0];
+    if (!current || !touch) return;
+    if (!current.active) {
+      if (Math.hypot(touch.clientX - current.originX, touch.clientY - current.originY) > 12) {
+        clearCustomTouchSelection();
+      }
+      return;
+    }
+
+    event.preventDefault();
+    const offset = textOffsetAtPoint(current.doc, current.root, touch.clientX, touch.clientY);
+    const text = current.root.textContent || "";
+    const anchor = current.anchorOffset == null ? null : wordRangeAtOffset(text, current.anchorOffset);
+    const moving = offset == null ? null : wordRangeAtOffset(text, offset);
+    if (!anchor || !moving) return;
+    current.startOffset = Math.min(anchor.start, moving.start);
+    current.endOffset = Math.max(anchor.end, moving.end);
+    const range = rangeFromOffsets(current.root, current.startOffset, current.endOffset);
+    if (range) {
+      setCustomSelectionRects(selectionRects(range, current.offsetLeft, current.offsetTop));
+    }
+  };
+
+  const finishCustomTouchSelection = (event: TouchEvent) => {
+    const current = customTouchSelectionRef.current;
+    window.clearTimeout(customLongPressTimerRef.current);
+    if (!current?.active) {
+      customTouchSelectionRef.current = null;
+      return;
+    }
+    event.preventDefault();
+    const range = rangeFromOffsets(current.root, current.startOffset, current.endOffset);
+    customTouchSelectionRef.current = null;
+    setCustomSelectionRects([]);
+    if (range) {
+      captureRange(
+        range,
+        current.source,
+        current.root,
+        current.offsetLeft,
+        current.offsetTop,
+        true
+      );
+    }
+  };
+
+  const cancelCustomTouchSelection = () => {
+    clearCustomTouchSelection();
+  };
 
   const captureReaderSelection = (autoOpenNote = false) => {
     window.requestAnimationFrame(() => captureSelection(
@@ -667,7 +864,32 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   };
 
   useEffect(() => {
-    if (isFidelity) return;
+    if (isFidelity || !useCustomIosSelection) return;
+    const root = contentRef.current;
+    if (!root) return;
+    const onTouchStart = (event: TouchEvent) => {
+      startCustomTouchSelection(event, document, root, "reader");
+    };
+    const onTouchMove = (event: TouchEvent) => moveCustomTouchSelection(event);
+    const onTouchEnd = (event: TouchEvent) => finishCustomTouchSelection(event);
+    const onTouchCancel = () => cancelCustomTouchSelection();
+    const onContextMenu = (event: Event) => event.preventDefault();
+    root.addEventListener("touchstart", onTouchStart, { passive: true });
+    root.addEventListener("touchmove", onTouchMove, { passive: false });
+    root.addEventListener("touchend", onTouchEnd, { passive: false });
+    root.addEventListener("touchcancel", onTouchCancel, { passive: true });
+    root.addEventListener("contextmenu", onContextMenu);
+    return () => {
+      root.removeEventListener("touchstart", onTouchStart);
+      root.removeEventListener("touchmove", onTouchMove);
+      root.removeEventListener("touchend", onTouchEnd);
+      root.removeEventListener("touchcancel", onTouchCancel);
+      root.removeEventListener("contextmenu", onContextMenu);
+    };
+  }, [isFidelity, chapterIndex, useCustomIosSelection]);
+
+  useEffect(() => {
+    if (isFidelity || useCustomIosSelection) return;
     const onSelectionChange = () => {
       const selection = window.getSelection();
       if (
@@ -680,7 +902,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     };
     document.addEventListener("selectionchange", onSelectionChange);
     return () => document.removeEventListener("selectionchange", onSelectionChange);
-  }, [isFidelity, chapterIndex]);
+  }, [isFidelity, chapterIndex, useCustomIosSelection]);
 
   const startNoteFromSelection = () => {
     if (!selectionTarget) return;
@@ -805,11 +1027,13 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       mobileSelectionStyle.id = "readtaylor-mobile-selection";
       cdoc.head.appendChild(mobileSelectionStyle);
     }
-    mobileSelectionStyle.textContent = `
+    mobileSelectionStyle.textContent = useCustomIosSelection ? `
       html, body, body * {
         -webkit-touch-callout: none !important;
+        -webkit-user-select: none !important;
+        user-select: none !important;
       }
-    `;
+    ` : "";
 
     const captureIframeSelection = (autoOpenNote = false) => {
       const frameRect = frame.getBoundingClientRect();
@@ -837,27 +1061,45 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       mobileSelectionTimerRef.current = window.setTimeout(captureWhenReady, 120);
     };
     cdoc.addEventListener("mouseup", () => captureIframeSelection(false));
-    cdoc.addEventListener("touchstart", beginTouchSelection, { passive: true });
-    cdoc.addEventListener("touchend", () => {
-      finishTouchSelection();
-      scheduleIframeSelection();
-    }, { passive: true });
-    cdoc.addEventListener("touchcancel", () => {
-      finishTouchSelection();
-      scheduleIframeSelection();
-    }, { passive: true });
     cdoc.addEventListener("keyup", () => captureIframeSelection(false));
-    cdoc.addEventListener("contextmenu", (event) => {
-      if (!cwin.getSelection()?.toString().trim()) return;
-      event.preventDefault();
-      finishTouchSelection();
-      scheduleIframeSelection();
-    });
+    if (useCustomIosSelection) {
+      cdoc.addEventListener("touchstart", (event) => {
+        const frameRect = frame.getBoundingClientRect();
+        startCustomTouchSelection(
+          event,
+          cdoc,
+          cdoc.body,
+          "iframe",
+          frameRect.left,
+          frameRect.top
+        );
+      }, { passive: true });
+      cdoc.addEventListener("touchmove", moveCustomTouchSelection, { passive: false });
+      cdoc.addEventListener("touchend", finishCustomTouchSelection, { passive: false });
+      cdoc.addEventListener("touchcancel", cancelCustomTouchSelection, { passive: true });
+      cdoc.addEventListener("contextmenu", (event) => event.preventDefault());
+    } else {
+      cdoc.addEventListener("touchstart", beginTouchSelection, { passive: true });
+      cdoc.addEventListener("touchend", () => {
+        finishTouchSelection();
+        scheduleIframeSelection();
+      }, { passive: true });
+      cdoc.addEventListener("touchcancel", () => {
+        finishTouchSelection();
+        scheduleIframeSelection();
+      }, { passive: true });
+      cdoc.addEventListener("contextmenu", (event) => {
+        if (!cwin.getSelection()?.toString().trim()) return;
+        event.preventDefault();
+        finishTouchSelection();
+        scheduleIframeSelection();
+      });
+    }
     cdoc.addEventListener("selectionchange", () => {
       const selection = cwin.getSelection();
       if (!selection || selection.isCollapsed || !selection.toString().trim()) {
         setSelectionTarget((current) => current?.source === "iframe" ? null : current);
-      } else if (hasRecentTouchSelection() && !touchSelectionActiveRef.current) {
+      } else if (!useCustomIosSelection && hasRecentTouchSelection() && !touchSelectionActiveRef.current) {
         scheduleIframeSelection();
       }
     });
@@ -1513,23 +1755,27 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         <div className="flex-1 relative overflow-hidden">
         <div
           ref={contentRef}
-          className="reader-selectable-content h-full overflow-y-auto"
+          className={`reader-selectable-content h-full overflow-y-auto${useCustomIosSelection ? " reader-custom-selection" : ""}`}
           style={{
             scrollbarWidth: "none",
             padding: "clamp(22px, 5vw, 36px) clamp(18px, 7vw, 72px)",
           }}
           onMouseUp={() => captureReaderSelection(false)}
-          onTouchStart={beginTouchSelection}
-          onTouchEnd={() => {
+          onTouchStart={useCustomIosSelection ? undefined : beginTouchSelection}
+          onTouchEnd={useCustomIosSelection ? undefined : () => {
             finishTouchSelection();
             scheduleReaderSelection();
           }}
-          onTouchCancel={() => {
+          onTouchCancel={useCustomIosSelection ? undefined : () => {
             finishTouchSelection();
             scheduleReaderSelection();
           }}
           onKeyUp={() => captureReaderSelection(false)}
           onContextMenu={(event) => {
+            if (useCustomIosSelection) {
+              event.preventDefault();
+              return;
+            }
             if (!window.getSelection()?.toString().trim()) return;
             event.preventDefault();
             finishTouchSelection();
@@ -1755,6 +2001,41 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
           </motion.div>
         )}
       </AnimatePresence>
+
+      {customSelectionRects.length > 0 && (
+        <div className="fixed inset-0 z-40 pointer-events-none" aria-live="polite">
+          {customSelectionRects.map((rect, index) => (
+            <span
+              key={`${index}-${Math.round(rect.left)}-${Math.round(rect.top)}`}
+              className="fixed"
+              style={{
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+                borderRadius: "3px",
+                background: "rgba(223, 167, 73, 0.4)",
+                boxShadow: "inset 0 -2px 0 rgba(177, 112, 25, 0.7)",
+              }}
+            />
+          ))}
+          <span
+            className="fixed left-1/2 -translate-x-1/2 rounded-full"
+            style={{
+              bottom: "calc(78px + env(safe-area-inset-bottom))",
+              padding: "8px 14px",
+              background: "var(--foreground)",
+              color: "var(--background)",
+              boxShadow: "0 8px 24px rgba(39, 29, 18, 0.22)",
+              fontFamily: "Inter, sans-serif",
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+          >
+            拖动选择 · 松开做笔记
+          </span>
+        </div>
+      )}
 
       {/* Text selection action — keep it separate from the normal reading toolbar. */}
       <AnimatePresence>
