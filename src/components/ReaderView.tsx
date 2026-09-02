@@ -20,6 +20,11 @@ import {
   Volume2,
   Languages,
   LoaderCircle,
+  BookOpenText,
+  ChevronsLeft,
+  ChevronsRight,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import type { Book } from "../lib/books";
@@ -87,6 +92,11 @@ type ActiveNoteRange = {
 type VisibleTranslationSource = {
   text: string;
   pageKey: string;
+};
+
+type ReadingTerm = {
+  label: string;
+  context: string;
 };
 
 const NOTE_COLORS: Array<{ id: NoteColor; label: string; hex: string; fill: string }> = [
@@ -217,6 +227,30 @@ function textOffsetAtPoint(doc: Document, root: Node, x: number, y: number): num
   return before.toString().length;
 }
 
+function extractReadingTerms(text: string, limit = 4): ReadingTerm[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  const matches = normalized.match(/\b(?:[A-Z][A-Z0-9_]{2,}|[A-Z][a-z]+(?:[- ][A-Z]?[a-z]+)*|[A-Za-z]+-[A-Za-z]+)\b/g) || [];
+  const ignored = new Set(["The", "This", "That", "With", "From", "These", "Those", "And", "For"]);
+  const seen = new Set<string>();
+  const terms: ReadingTerm[] = [];
+  for (const raw of matches) {
+    const label = raw.trim();
+    const key = label.toLowerCase();
+    if (label.length < 3 || ignored.has(label) || seen.has(key)) continue;
+    seen.add(key);
+    const position = normalized.indexOf(label);
+    const contextStart = Math.max(0, position - 22);
+    const contextEnd = Math.min(normalized.length, position + label.length + 34);
+    terms.push({
+      label,
+      context: `${contextStart > 0 ? "…" : ""}${normalized.slice(contextStart, contextEnd)}${contextEnd < normalized.length ? "…" : ""}`,
+    });
+    if (terms.length >= limit) break;
+  }
+  return terms;
+}
+
 function clampProgress(value: number): number {
   return Math.min(Math.max(value || 0, 0), 1);
 }
@@ -339,6 +373,10 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const [translationText, setTranslationText] = useState("");
   const [translationError, setTranslationError] = useState("");
   const [translationDetectedLanguage, setTranslationDetectedLanguage] = useState("");
+  const [desktopWorkspace, setDesktopWorkspace] = useState(() => window.matchMedia("(min-width: 1280px)").matches);
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
+  const [studySections, setStudySections] = useState({ notes: true, terms: true, translation: false });
   const contentRef = useRef<HTMLDivElement>(null);
   const restorePositionRef = useRef({
     chapterIndex: initialChapterIndex,
@@ -377,6 +415,14 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   speechRateRef.current = speechRate;
 
   const chapter = book.chapters[chapterIndex];
+
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 1280px)");
+    const update = () => setDesktopWorkspace(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
 
   // 原版模式：渲染当前章节的原 HTML
   useEffect(() => {
@@ -850,6 +896,18 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const fidelityProgress = currentGlobalPage != null && totalPages != null
     ? totalPages > 1 ? (currentGlobalPage - 1) / (totalPages - 1) : 1
     : (chapterIndex + chapterPageIndex / currentChapterPageCount) / book.chapters.length;
+  const overallProgress = isFidelity
+    ? fidelityProgress
+    : Math.min(1, (chapterIndex + scrollProgress) / Math.max(1, book.chapters.length));
+  const currentPageNotes = notes.filter((note) => (
+    note.chapterId === chapter.id
+    && (!isFidelity || note.pageIndex == null || note.pageIndex === chapterPageIndex)
+  ));
+  const studyTerms = extractReadingTerms(
+    isFidelity
+      ? iframeRef.current?.contentDocument?.body?.innerText || ""
+      : chapter.content
+  );
 
   const currentPageTranslationSource = (): VisibleTranslationSource => {
     if (isFidelity) {
@@ -914,6 +972,12 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   };
 
   const toggleCurrentPageTranslation = () => {
+    if (desktopWorkspace) {
+      setRightSidebarOpen(true);
+      setStudySections((sections) => ({ ...sections, translation: true }));
+      if (!translationVisible) void translateSource(currentPageTranslationSource(), translationLanguage);
+      return;
+    }
     if (translationVisible) {
       translationRequestRef.current?.abort();
       setTranslationVisible(false);
@@ -929,7 +993,29 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     if (translationVisible && source) void translateSource(source, language);
   };
 
-  const translationOverlay = translationVisible && (
+  const openChapterNavigation = () => {
+    if (desktopWorkspace) setLeftSidebarOpen(true);
+    else setShowChapters(true);
+  };
+
+  const openNotesWorkspace = () => {
+    if (desktopWorkspace) {
+      setRightSidebarOpen(true);
+      setStudySections((sections) => ({ ...sections, notes: true }));
+    } else {
+      setShowNotes(true);
+    }
+  };
+
+  const toggleStudySection = (section: keyof typeof studySections) => {
+    const opening = !studySections[section];
+    setStudySections((sections) => ({ ...sections, [section]: !sections[section] }));
+    if (section === "translation" && opening && !translationVisible) {
+      void translateSource(currentPageTranslationSource(), translationLanguage);
+    }
+  };
+
+  const translationOverlay = translationVisible && !desktopWorkspace && (
     <div
       className="absolute inset-0 z-20 flex flex-col"
       style={{ background: "var(--background)", color: "var(--foreground)" }}
@@ -1174,18 +1260,73 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
 
   return (
     <div
-      className="relative flex flex-col h-screen overflow-hidden"
+      className={`reader-workspace relative h-screen overflow-hidden${leftSidebarOpen ? "" : " reader-workspace-left-collapsed"}${rightSidebarOpen ? "" : " reader-workspace-right-collapsed"}`}
       style={{
         background: isDark ? "var(--background)" : "#faf6ef",
         height: "100dvh",
         minHeight: "100svh",
       }}
     >
+      <aside
+        aria-label="阅读目录与进度"
+        className={`reader-desktop-sidebar reader-left-sidebar${leftSidebarOpen ? "" : " reader-sidebar-collapsed"}`}
+      >
+        {leftSidebarOpen ? (
+          <>
+            <div className="reader-sidebar-header">
+              <div className="flex min-w-0 items-center gap-2">
+                <BookOpenText size={17} />
+                <span>目录</span>
+              </div>
+              <button
+                onClick={() => setLeftSidebarOpen(false)}
+                aria-label="收起目录侧栏"
+                className="reader-sidebar-icon-button"
+              >
+                <ChevronsLeft size={17} />
+              </button>
+            </div>
+            <nav className="reader-chapter-rail" aria-label="章节目录">
+              {book.chapters.map((item, index) => (
+                <button
+                  key={item.id}
+                  onClick={() => goToChapter(index, "first")}
+                  aria-current={index === chapterIndex ? "page" : undefined}
+                  className={`reader-chapter-link${index === chapterIndex ? " is-current" : ""}`}
+                >
+                  <span className="reader-chapter-dot" aria-hidden="true" />
+                  <span>{item.title}</span>
+                </button>
+              ))}
+            </nav>
+            <div className="reader-sidebar-progress">
+              <span>阅读进度</span>
+              <div className="reader-progress-track" aria-hidden="true">
+                <span style={{ width: `${overallProgress * 100}%` }} />
+              </div>
+              <div className="reader-progress-meta">
+                <span>{isFidelity ? pageLabel : `${chapterIndex + 1} / ${book.chapters.length}`}</span>
+                <span>{Math.round(overallProgress * 1000) / 10}%</span>
+              </div>
+            </div>
+          </>
+        ) : (
+          <button
+            onClick={() => setLeftSidebarOpen(true)}
+            aria-label="展开目录侧栏"
+            className="reader-collapsed-rail-button"
+          >
+            <ChevronRight size={18} />
+          </button>
+        )}
+      </aside>
+
+      <main className="reader-main relative flex min-w-0 flex-col overflow-hidden">
       {/* Progress bar */}
       <div
         className="absolute top-0 left-0 h-0.5 z-20 transition-all duration-200"
         style={{
-          width: `${scrollProgress * 100}%`,
+          width: `${overallProgress * 100}%`,
           background: "var(--accent)",
         }}
       />
@@ -1215,7 +1356,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         </button>
 
         <button
-          onClick={() => setShowChapters(true)}
+          onClick={openChapterNavigation}
           aria-label="打开目录"
           className="flex-1 min-w-0 mx-3 sm:mx-4 text-center truncate"
           style={{ fontFamily: "Inter, sans-serif", color: "var(--muted-foreground)", fontSize: "13px" }}
@@ -1226,7 +1367,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         <div className="flex shrink-0 items-center gap-2">
           <button
             onClick={toggleCurrentPageTranslation}
-            aria-label={translationVisible ? "关闭译文，查看原文" : "翻译当前页"}
+            aria-label={desktopWorkspace ? "在学习工作台中翻译当前页" : translationVisible ? "关闭译文，查看原文" : "翻译当前页"}
             aria-pressed={translationVisible}
             className="w-10 h-10 flex items-center justify-center rounded-full"
             style={{ background: "var(--secondary)" }}
@@ -1247,9 +1388,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             <Volume2 size={18} style={{ color: speechStatus === "idle" ? "var(--muted-foreground)" : "var(--accent)" }} />
           </button>
           <button
-            onClick={() => {
-              setShowNotes(true);
-            }}
+            onClick={openNotesWorkspace}
             aria-label={`打开笔记${notes.length ? `，共 ${notes.length} 条` : ""}`}
             className="relative w-10 h-10 flex items-center justify-center rounded-full"
             style={{ background: "var(--secondary)" }}
@@ -1301,7 +1440,11 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       {/* Content — 原版（EPUB iframe）或文本模式 */}
       {isFidelity ? (
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div ref={viewportRef} className="flex-1 relative overflow-hidden">
+          <div className="reader-reading-stage flex-1 overflow-hidden">
+          <div
+            ref={viewportRef}
+            className={`reader-page-frame relative h-full overflow-hidden${fixedLayout ? " reader-page-frame-fixed" : ""}`}
+          >
             {renderError ? (
               <div
                 className="absolute inset-0 flex items-center justify-center px-8 text-center"
@@ -1350,6 +1493,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               </div>
             )}
             {translationOverlay}
+          </div>
           </div>
 
           {/* 原版模式：按全书实际排版页数翻页 */}
@@ -1411,7 +1555,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
               )}
             </button>
             <button
-              onClick={() => setShowChapters(true)}
+              onClick={openChapterNavigation}
               aria-label="打开目录"
               className="w-10 h-10 shrink-0 flex items-center justify-center rounded-full"
               style={{ background: "var(--secondary)" }}
@@ -1434,10 +1578,10 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         </div>
       ) : (
         <>
-        <div className="flex-1 relative overflow-hidden">
+        <div className="reader-reading-stage flex-1 relative overflow-hidden">
         <div
           ref={contentRef}
-          className="h-full overflow-y-auto"
+          className="reader-text-page h-full overflow-y-auto"
           style={{
             scrollbarWidth: "none",
             padding: "clamp(22px, 5vw, 36px) clamp(18px, 7vw, 72px)",
@@ -1567,7 +1711,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             )}
           </button>
           <button
-            onClick={() => setShowChapters(true)}
+            onClick={openChapterNavigation}
             aria-label="打开目录"
             className="w-10 h-10 flex items-center justify-center rounded-full"
             style={{ background: "var(--secondary)" }}
@@ -2082,6 +2226,137 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
           </>
         )}
       </AnimatePresence>
+      </main>
+
+      <aside
+        aria-label="学习工作台"
+        className={`reader-desktop-sidebar reader-right-sidebar${rightSidebarOpen ? "" : " reader-sidebar-collapsed"}`}
+      >
+        {rightSidebarOpen ? (
+          <>
+            <div className="reader-sidebar-header">
+              <span>学习工作台</span>
+              <button
+                onClick={() => setRightSidebarOpen(false)}
+                aria-label="收起学习工作台"
+                className="reader-sidebar-icon-button"
+              >
+                <ChevronsRight size={17} />
+              </button>
+            </div>
+            <div className="reader-study-scroll">
+              <section className="reader-study-section">
+                <button
+                  onClick={() => toggleStudySection("notes")}
+                  className="reader-study-section-heading"
+                  aria-expanded={studySections.notes}
+                >
+                  <span>本页笔记</span>
+                  <span className="flex items-center gap-2">
+                    {currentPageNotes.length > 0 && <small>{currentPageNotes.length}</small>}
+                    {studySections.notes ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                  </span>
+                </button>
+                {studySections.notes && (
+                  <div className="reader-study-section-content">
+                    {currentPageNotes.length === 0 ? (
+                      <div className="reader-study-empty">
+                        本页还没有笔记，选中文字即可添加。
+                      </div>
+                    ) : currentPageNotes.slice(0, 4).map((note) => (
+                      <article key={note.id} className="reader-note-preview" style={{ borderLeftColor: noteColor(note.color).hex }}>
+                        <div className="reader-note-preview-actions">
+                          <button onClick={() => editNote(note)} aria-label="编辑笔记"><Pencil size={13} /></button>
+                          <button onClick={() => removeNote(note)} aria-label="删除笔记"><Trash2 size={13} /></button>
+                        </div>
+                        <blockquote>{note.quote}</blockquote>
+                        {note.body && <p>{note.body}</p>}
+                        <time>{new Date(note.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="reader-study-section">
+                <button
+                  onClick={() => toggleStudySection("terms")}
+                  className="reader-study-section-heading"
+                  aria-expanded={studySections.terms}
+                >
+                  <span>本页术语</span>
+                  <span className="flex items-center gap-2">
+                    {studyTerms.length > 0 && <small>{studyTerms.length}</small>}
+                    {studySections.terms ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                  </span>
+                </button>
+                {studySections.terms && (
+                  <div className="reader-study-section-content">
+                    {studyTerms.length === 0 ? (
+                      <div className="reader-study-empty">本页没有识别到需要单独查看的外文术语。</div>
+                    ) : studyTerms.map((term) => (
+                      <div key={term.label} className="reader-term-preview">
+                        <strong>{term.label}</strong>
+                        <p>{term.context}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="reader-study-section">
+                <button
+                  onClick={() => toggleStudySection("translation")}
+                  className="reader-study-section-heading"
+                  aria-expanded={studySections.translation}
+                >
+                  <span>本页翻译</span>
+                  {studySections.translation ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                </button>
+                {studySections.translation && (
+                  <div className="reader-study-section-content">
+                    <select
+                      aria-label="选择翻译语言"
+                      value={translationLanguage}
+                      onChange={(event) => changeTranslationLanguage(event.target.value)}
+                      className="reader-study-language"
+                    >
+                      {TRANSLATION_LANGUAGES.map((language) => (
+                        <option key={language.code} value={language.code}>{language.label}</option>
+                      ))}
+                    </select>
+                    {translationLoading ? (
+                      <div className="reader-study-loading"><LoaderCircle className="animate-spin" size={16} /> 正在翻译当前页…</div>
+                    ) : translationError ? (
+                      <div className="reader-study-error">
+                        <p>{translationError}</p>
+                        <button onClick={() => void translateSource(currentPageTranslationSource(), translationLanguage)}>重试</button>
+                      </div>
+                    ) : translationText ? (
+                      <div className="reader-translation-preview">{translationText}</div>
+                    ) : (
+                      <button
+                        onClick={() => void translateSource(currentPageTranslationSource(), translationLanguage)}
+                        className="reader-study-primary-button"
+                      >
+                        翻译当前页
+                      </button>
+                    )}
+                  </div>
+                )}
+              </section>
+            </div>
+          </>
+        ) : (
+          <button
+            onClick={() => setRightSidebarOpen(true)}
+            aria-label="展开学习工作台"
+            className="reader-collapsed-rail-button"
+          >
+            <ChevronLeft size={18} />
+          </button>
+        )}
+      </aside>
     </div>
   );
 }
