@@ -788,6 +788,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     setSpeechMessage("从当前阅读位置开始朗读");
     setSpeechStatus("playing");
     speakNextChunk(speechSessionRef.current);
+    setShowSpeechControls(false);
   };
 
   const toggleSpeech = () => {
@@ -799,6 +800,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       window.speechSynthesis.resume();
       setSpeechStatus("playing");
       setSpeechMessage("继续朗读");
+      setShowSpeechControls(false);
     } else {
       startSpeech();
     }
