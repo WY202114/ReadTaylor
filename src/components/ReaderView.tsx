@@ -248,12 +248,6 @@ function createSpeechChunks(text: string, progress: number): string[] {
   return chunks;
 }
 
-function usesTouchSelection(): boolean {
-  if (typeof window === "undefined") return false;
-  if (typeof window.matchMedia === "function") return window.matchMedia("(pointer: coarse)").matches;
-  return navigator.maxTouchPoints > 0;
-}
-
 function intersectsViewport(rect: DOMRect, viewport: DOMRect): boolean {
   return rect.width > 0
     && rect.height > 0
@@ -371,6 +365,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const speechSessionRef = useRef(0);
   const speechRateRef = useRef(speechRate);
   const mobileSelectionTimerRef = useRef<number | undefined>(undefined);
+  const touchSelectionStartedAtRef = useRef(0);
+  const touchSelectionActiveRef = useRef(false);
   const translationRequestRef = useRef<AbortController | null>(null);
   const translationSourceRef = useRef<VisibleTranslationSource | null>(null);
   fontSizeRef.current = fontSize;
@@ -544,6 +540,9 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   }, []);
 
   useEffect(() => {
+    window.clearTimeout(mobileSelectionTimerRef.current);
+    touchSelectionStartedAtRef.current = 0;
+    touchSelectionActiveRef.current = false;
     setSelectionTarget(null);
     setTranslationVisible(false);
     setTranslationError("");
@@ -577,7 +576,8 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     source: SelectionTarget["source"],
     root: Node | null,
     offsetLeft = 0,
-    offsetTop = 0
+    offsetTop = 0,
+    autoOpenNote = false
   ) => {
     const text = selection?.toString().trim() || "";
     if (!selection || selection.rangeCount === 0 || !text) {
@@ -614,29 +614,69 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
       startOffset,
       endOffset,
     };
-    if (usesTouchSelection()) openNoteComposerForSelection(selected);
+    if (autoOpenNote) openNoteComposerForSelection(selected);
     else setSelectionTarget(selected);
     return true;
   };
 
-  const captureReaderSelection = () => {
+  const beginTouchSelection = () => {
+    touchSelectionStartedAtRef.current = Date.now();
+    touchSelectionActiveRef.current = true;
+  };
+
+  const finishTouchSelection = () => {
+    touchSelectionStartedAtRef.current = Date.now();
+    touchSelectionActiveRef.current = false;
+  };
+
+  const hasRecentTouchSelection = () => (
+    Date.now() - touchSelectionStartedAtRef.current < 5000
+  );
+
+  const captureReaderSelection = (autoOpenNote = false) => {
     window.requestAnimationFrame(() => captureSelection(
       window.getSelection(),
       "reader",
-      contentRef.current
+      contentRef.current,
+      0,
+      0,
+      autoOpenNote
     ));
   };
 
   const scheduleReaderSelection = () => {
     window.clearTimeout(mobileSelectionTimerRef.current);
-    mobileSelectionTimerRef.current = window.setTimeout(captureReaderSelection, 320);
+    let attempts = 0;
+    const captureWhenReady = () => {
+      attempts += 1;
+      window.requestAnimationFrame(() => {
+        const captured = captureSelection(
+          window.getSelection(),
+          "reader",
+          contentRef.current,
+          0,
+          0,
+          true
+        );
+        if (!captured && attempts < 10) {
+          mobileSelectionTimerRef.current = window.setTimeout(captureWhenReady, 180);
+        }
+      });
+    };
+    mobileSelectionTimerRef.current = window.setTimeout(captureWhenReady, 120);
   };
 
   useEffect(() => {
-    if (isFidelity || !usesTouchSelection()) return;
+    if (isFidelity) return;
     const onSelectionChange = () => {
       const selection = window.getSelection();
-      if (selection && !selection.isCollapsed && selection.toString().trim()) scheduleReaderSelection();
+      if (
+        hasRecentTouchSelection()
+        && !touchSelectionActiveRef.current
+        && selection
+        && !selection.isCollapsed
+        && selection.toString().trim()
+      ) scheduleReaderSelection();
     };
     document.addEventListener("selectionchange", onSelectionChange);
     return () => document.removeEventListener("selectionchange", onSelectionChange);
@@ -759,29 +799,65 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     scrollFrameToPage(frame, targetPage);
     setRendering(false);
 
-    const captureIframeSelection = () => {
-      window.requestAnimationFrame(() => {
-        const frameRect = frame.getBoundingClientRect();
-        captureSelection(cwin.getSelection(), "iframe", cdoc.body, frameRect.left, frameRect.top);
-      });
+    let mobileSelectionStyle = cdoc.getElementById("readtaylor-mobile-selection") as HTMLStyleElement | null;
+    if (!mobileSelectionStyle) {
+      mobileSelectionStyle = cdoc.createElement("style");
+      mobileSelectionStyle.id = "readtaylor-mobile-selection";
+      cdoc.head.appendChild(mobileSelectionStyle);
+    }
+    mobileSelectionStyle.textContent = `
+      html, body, body * {
+        -webkit-touch-callout: none !important;
+      }
+    `;
+
+    const captureIframeSelection = (autoOpenNote = false) => {
+      const frameRect = frame.getBoundingClientRect();
+      return captureSelection(
+        cwin.getSelection(),
+        "iframe",
+        cdoc.body,
+        frameRect.left,
+        frameRect.top,
+        autoOpenNote
+      );
     };
     const scheduleIframeSelection = () => {
       window.clearTimeout(mobileSelectionTimerRef.current);
-      mobileSelectionTimerRef.current = window.setTimeout(captureIframeSelection, 320);
+      let attempts = 0;
+      const captureWhenReady = () => {
+        attempts += 1;
+        window.requestAnimationFrame(() => {
+          const captured = captureIframeSelection(true);
+          if (!captured && attempts < 10) {
+            mobileSelectionTimerRef.current = window.setTimeout(captureWhenReady, 180);
+          }
+        });
+      };
+      mobileSelectionTimerRef.current = window.setTimeout(captureWhenReady, 120);
     };
-    cdoc.addEventListener("mouseup", captureIframeSelection);
-    cdoc.addEventListener("touchend", scheduleIframeSelection);
-    cdoc.addEventListener("keyup", captureIframeSelection);
+    cdoc.addEventListener("mouseup", () => captureIframeSelection(false));
+    cdoc.addEventListener("touchstart", beginTouchSelection, { passive: true });
+    cdoc.addEventListener("touchend", () => {
+      finishTouchSelection();
+      scheduleIframeSelection();
+    }, { passive: true });
+    cdoc.addEventListener("touchcancel", () => {
+      finishTouchSelection();
+      scheduleIframeSelection();
+    }, { passive: true });
+    cdoc.addEventListener("keyup", () => captureIframeSelection(false));
     cdoc.addEventListener("contextmenu", (event) => {
-      if (!usesTouchSelection() || !cwin.getSelection()?.toString().trim()) return;
+      if (!cwin.getSelection()?.toString().trim()) return;
       event.preventDefault();
+      finishTouchSelection();
       scheduleIframeSelection();
     });
     cdoc.addEventListener("selectionchange", () => {
       const selection = cwin.getSelection();
       if (!selection || selection.isCollapsed || !selection.toString().trim()) {
         setSelectionTarget((current) => current?.source === "iframe" ? null : current);
-      } else if (usesTouchSelection()) {
+      } else if (hasRecentTouchSelection() && !touchSelectionActiveRef.current) {
         scheduleIframeSelection();
       }
     });
@@ -1437,17 +1513,26 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         <div className="flex-1 relative overflow-hidden">
         <div
           ref={contentRef}
-          className="h-full overflow-y-auto"
+          className="reader-selectable-content h-full overflow-y-auto"
           style={{
             scrollbarWidth: "none",
             padding: "clamp(22px, 5vw, 36px) clamp(18px, 7vw, 72px)",
           }}
-          onMouseUp={captureReaderSelection}
-          onTouchEnd={scheduleReaderSelection}
-          onKeyUp={captureReaderSelection}
+          onMouseUp={() => captureReaderSelection(false)}
+          onTouchStart={beginTouchSelection}
+          onTouchEnd={() => {
+            finishTouchSelection();
+            scheduleReaderSelection();
+          }}
+          onTouchCancel={() => {
+            finishTouchSelection();
+            scheduleReaderSelection();
+          }}
+          onKeyUp={() => captureReaderSelection(false)}
           onContextMenu={(event) => {
-            if (!usesTouchSelection() || !window.getSelection()?.toString().trim()) return;
+            if (!window.getSelection()?.toString().trim()) return;
             event.preventDefault();
+            finishTouchSelection();
             scheduleReaderSelection();
           }}
           onClick={(event) => {

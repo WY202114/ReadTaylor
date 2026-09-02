@@ -41,6 +41,13 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+/* iOS WebKit: keep text selectable, but suppress the native copy/search callout.
+   ReaderView watches the resulting selection and opens the note composer itself. */
+.reader-selectable-content,
+.reader-selectable-content * {
+  -webkit-touch-callout: none;
+}
+
 .dark {
   --background: #1a1410;
   --foreground: #e8ddd0;
