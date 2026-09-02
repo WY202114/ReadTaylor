@@ -341,7 +341,13 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     const frame = measurementIframeRef.current;
     const measuredChapter = measurementIndex;
     if (!frame || measuredChapter < 0) return;
-    const { pageCount } = await paginateFrame(frame, false, fontSize);
+    const measuredChapterInfo = book.chapters[measuredChapter];
+    const { pageCount } = await paginateFrame(
+      frame,
+      false,
+      fontSize,
+      Boolean(measuredChapterInfo?.isCover) || measuredChapter === 0
+    );
     if (measuredChapter !== measurementIndex) return;
     setChapterPageCounts((previous) => {
       const next = [...previous];
@@ -613,7 +619,12 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     const cdoc = frame?.contentDocument;
     const cwin = frame?.contentWindow;
     if (!cdoc || !cwin) return;
-    const { pageCount } = await paginateFrame(frame, fixedLayout, fontSize);
+    const { pageCount } = await paginateFrame(
+      frame,
+      fixedLayout,
+      fontSize,
+      Boolean(chapter.isCover) || chapterIndex === 0
+    );
     setChapterPageCounts((previous) => {
       const next = [...previous];
       next[chapterIndex] = pageCount;
@@ -1065,6 +1076,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
             <button
               onClick={goToPreviousPage}
               disabled={rendering || (chapterIndex === 0 && chapterPageIndex === 0)}
+              aria-label="上一页"
               className="flex shrink-0 items-center gap-1 rounded-lg transition-opacity disabled:opacity-30"
               style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px", minHeight: "40px", padding: "7px clamp(9px, 3vw, 14px)" }}
             >
@@ -1124,6 +1136,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
                 chapterIndex === book.chapters.length - 1
                 && chapterPageIndex >= currentChapterPageCount - 1
               )}
+              aria-label="下一页"
               className="flex shrink-0 items-center gap-1 rounded-lg transition-opacity disabled:opacity-30"
               style={{ background: "var(--secondary)", color: "var(--foreground)", fontFamily: "Inter, sans-serif", fontSize: "13px", minHeight: "40px", padding: "7px clamp(9px, 3vw, 14px)" }}
             >

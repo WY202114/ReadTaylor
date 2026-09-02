@@ -2,12 +2,14 @@
 // ReadTaylor 不内置任何书籍内容。
 import { putFile } from "./filestore";
 import { archiveToFixedLayoutEPUB, pdfToFixedLayoutEPUB } from "./fixedLayoutEpub";
+import { findEpubCover, storeBookCover } from "./epubCover";
 
 export interface Chapter {
   id: string;
   title: string;
   content: string; // 文本模式：段落之间用 \n\n 分隔；原版模式可为空
   href?: string; // 原版模式：章节在 EPUB 包内的完整路径
+  isCover?: boolean; // 文字型 EPUB 的封面章节仍需按整页显示，不能被正文分页切开
 }
 
 export interface Book {
@@ -255,6 +257,7 @@ async function epubToBook(
   const opf = parser.parseFromString(await read(opfPath), "application/xml");
   const bookTitle = localTags(opf, "title")[0]?.textContent?.trim() || fallbackTitle;
   const author = localTags(opf, "creator")[0]?.textContent?.trim() || "本地上传";
+  const cover = await findEpubCover(zip, opf, opfPath).catch(() => null);
 
   const hrefById: Record<string, string> = {};
   let navHref = "";
@@ -297,7 +300,13 @@ async function epubToBook(
         doc.title?.trim() ||
         `第 ${chapters.length + 1} 章`;
     }
-    chapters.push({ id: `c${i}`, title, content: "", href: path });
+    chapters.push({
+      id: `c${i}`,
+      title,
+      content: "",
+      href: path,
+      isCover: cover?.documentPath === path,
+    });
   }
 
   if (chapters.length === 0) return { error: "无法从这个 EPUB 解析出章节。" };
@@ -311,6 +320,7 @@ async function epubToBook(
   book.layout = fixedLayout ? "fixed" : "reflowable";
   // 原始文件存入 IndexedDB，供原版渲染反复读取
   await putFile(book.id, file);
+  await storeBookCover(book.id, cover?.blob || null).catch(() => undefined);
   return { book };
 }
 

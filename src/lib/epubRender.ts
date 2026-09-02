@@ -36,6 +36,24 @@ interface Loaded {
   cache: Map<string, string>; // 资源路径 → blob URL
 }
 
+function resourceMediaType(path: string): string {
+  const extension = path.split(".").pop()?.toLowerCase();
+  const types: Record<string, string> = {
+    svg: "image/svg+xml",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    avif: "image/avif",
+    woff: "font/woff",
+    woff2: "font/woff2",
+    ttf: "font/ttf",
+    otf: "font/otf",
+  };
+  return extension ? types[extension] || "" : "";
+}
+
 let loaded: Loaded | null = null;
 
 export function cleanup(): void {
@@ -60,7 +78,9 @@ async function blobUrl(L: Loaded, path: string): Promise<string | null> {
   if (L.cache.has(path)) return L.cache.get(path)!;
   const entry = L.zip.file(path);
   if (!entry) return null;
-  const b = await entry.async("blob");
+  const original = await entry.async("blob");
+  const mediaType = resourceMediaType(path);
+  const b = mediaType ? original.slice(0, original.size, mediaType) : original;
   const url = URL.createObjectURL(b);
   L.urls.push(url);
   L.cache.set(path, url);

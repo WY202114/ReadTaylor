@@ -10,7 +10,8 @@ function nextFrame(win: Window): Promise<void> {
 export async function paginateFrame(
   frame: HTMLIFrameElement,
   fixedLayout: boolean,
-  fontSize = 16
+  fontSize = 16,
+  coverCandidate = false
 ): Promise<FramePagination> {
   const doc = frame.contentDocument;
   const win = frame.contentWindow;
@@ -23,14 +24,46 @@ export async function paginateFrame(
     doc.head.appendChild(style);
   }
 
-  if (fixedLayout) {
+  const bodyText = (doc.body?.innerText || "").replace(/\s+/g, "");
+  const hasCoverVisual = Boolean(doc.body?.querySelector("img,svg"));
+  const explicitCover = /(^|[\s_-])(cover|封面)([\s_-]|$)/i.test([
+    doc.title,
+    doc.body?.id,
+    doc.body?.className,
+  ].filter(Boolean).join(" "));
+  const singlePageLayout = fixedLayout || (
+    coverCandidate && hasCoverVisual && (explicitCover || bodyText.length < 60)
+  );
+
+  if (singlePageLayout) {
     style.textContent = `
       html, body {
+        box-sizing: border-box !important;
         width: 100% !important;
         height: 100% !important;
         max-width: none !important;
         max-height: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
         overflow: hidden !important;
+      }
+      body {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+      }
+      body > * {
+        max-width: 100% !important;
+        max-height: 100% !important;
+        margin: auto !important;
+      }
+      img, svg, image {
+        width: auto !important;
+        height: auto !important;
+        max-width: 100vw !important;
+        max-height: 100vh !important;
+        object-fit: contain !important;
+        break-inside: avoid !important;
       }
     `;
   } else {
@@ -77,7 +110,7 @@ export async function paginateFrame(
   await nextFrame(win);
 
   const pageWidth = Math.max(1, frame.clientWidth);
-  if (fixedLayout) return { pageCount: 1, pageWidth };
+  if (singlePageLayout) return { pageCount: 1, pageWidth };
   const scrollWidth = Math.max(
     doc.documentElement.scrollWidth,
     doc.body?.scrollWidth || 0,

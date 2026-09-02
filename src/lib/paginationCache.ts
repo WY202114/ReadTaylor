@@ -15,8 +15,9 @@ const MAX_CACHE_ENTRIES = 24;
 
 function bookSignature(book: Book): string {
   return [
+    "cover-layout-v2",
     book.layout || "reflowable",
-    ...book.chapters.map((chapter) => `${chapter.id}:${chapter.href || ""}`),
+    ...book.chapters.map((chapter) => `${chapter.id}:${chapter.href || ""}:${chapter.isCover ? "cover" : "content"}`),
   ].join("|");
 }
 
