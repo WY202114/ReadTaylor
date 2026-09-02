@@ -41,15 +41,6 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
-/* iOS WebKit: native text selection always owns the copy/search menu.
-   ReaderView replaces it with its own long-press selection on this class. */
-.reader-custom-selection,
-.reader-custom-selection * {
-  -webkit-touch-callout: none !important;
-  -webkit-user-select: none !important;
-  user-select: none !important;
-}
-
 .dark {
   --background: #1a1410;
   --foreground: #e8ddd0;
