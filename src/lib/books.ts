@@ -34,6 +34,15 @@ export interface BookImportOptions {
 }
 
 const STORAGE_KEY = "readtaylor.books.v1";
+const READING_POSITION_STORAGE_KEY = "readtaylor.reading-positions.v1";
+
+interface SavedReadingPosition {
+  lastChapter: number;
+  lastScroll: number;
+  progress: number;
+}
+
+type SavedReadingPositions = Record<string, SavedReadingPosition>;
 
 // 暖色书脊调色板，呼应整体米色 / 棕金主题
 const PALETTE = [
@@ -405,9 +414,66 @@ export function loadBooks(): Book[] {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as Book[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    const positions = loadReadingPositions();
+    return (parsed as Book[]).map((book) => {
+      const saved = positions[book.id];
+      if (!saved) return book;
+      return {
+        ...book,
+        lastChapter: Math.min(Math.max(0, saved.lastChapter), Math.max(0, book.chapters.length - 1)),
+        lastScroll: Math.min(1, Math.max(0, saved.lastScroll)),
+        progress: Math.min(100, Math.max(0, saved.progress)),
+      };
+    });
   } catch {
     return [];
+  }
+}
+
+function loadReadingPositions(): SavedReadingPositions {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(READING_POSITION_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as SavedReadingPositions
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+// 阅读过程中只写入很小的位置记录，避免滚动时反复重写整本书的内容。
+export function saveReadingPosition(
+  bookId: string,
+  lastChapter: number,
+  lastScroll: number,
+  chapterCount: number
+): boolean {
+  try {
+    const safeChapterCount = Math.max(1, chapterCount);
+    const safeChapter = Math.min(Math.max(0, lastChapter), safeChapterCount - 1);
+    const safeScroll = Math.min(1, Math.max(0, lastScroll));
+    const positions = loadReadingPositions();
+    positions[bookId] = {
+      lastChapter: safeChapter,
+      lastScroll: safeScroll,
+      progress: Math.round(((safeChapter + 1) / safeChapterCount) * 100),
+    };
+    localStorage.setItem(READING_POSITION_STORAGE_KEY, JSON.stringify(positions));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function deleteReadingPosition(bookId: string): void {
+  try {
+    const positions = loadReadingPositions();
+    if (!(bookId in positions)) return;
+    delete positions[bookId];
+    localStorage.setItem(READING_POSITION_STORAGE_KEY, JSON.stringify(positions));
+  } catch {
+    // 清理失败不影响用户继续使用书架。
   }
 }
 

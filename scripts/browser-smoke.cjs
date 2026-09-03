@@ -269,6 +269,47 @@ async function main() {
       if (!afterTurn.result.value.label.startsWith("2 / ") || afterTurn.result.value.scrollX <= 0) {
         throw new Error(`Next page did not advance horizontally: ${JSON.stringify(afterTurn.result.value)}`);
       }
+
+      // 直接刷新页面，不点击“返回书架”，验证阅读位置仍会自动保存并恢复。
+      await delay(500);
+      const savedPosition = await command("Runtime.evaluate", {
+        expression: `localStorage.getItem("readtaylor.reading-positions.v1") || "{}"`,
+        returnByValue: true,
+      });
+      const positionValues = Object.values(JSON.parse(savedPosition.result.value));
+      if (!positionValues.some((position) => position.lastScroll > 0)) {
+        throw new Error(`Reading position was not auto-saved: ${savedPosition.result.value}`);
+      }
+      await command("Page.reload");
+      await delay(1200);
+      const reopened = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const title = "ReadTaylor 原样排版测试书";
+          const button = [...document.querySelectorAll("button")]
+            .find((item) => item.textContent.includes(title));
+          if (!button) return false;
+          button.click();
+          return true;
+        })()`,
+        returnByValue: true,
+      });
+      if (!reopened.result.value) throw new Error("Saved-position test book could not be reopened.");
+      let restoredLabel = "";
+      for (let attempt = 0; attempt < 80; attempt++) {
+        await delay(150);
+        const restored = await command("Runtime.evaluate", {
+          expression: `document.body.innerText.split("\\n").map((line) => line.trim())
+            .find((line) => line.includes(" / ")
+              && Number.isFinite(Number(line.split(" / ")[0]))
+              && Number.isFinite(Number(line.split(" / ")[1]))) || ""`,
+          returnByValue: true,
+        });
+        restoredLabel = restored.result.value;
+        if (restoredLabel) break;
+      }
+      if (!restoredLabel.startsWith("2 / ")) {
+        throw new Error(`Reading position was not restored after reload: ${restoredLabel}`);
+      }
       const firstChapterPages = Math.max(1, Math.round(pagination.scrollWidth / pagination.clientWidth));
       for (let page = 1; page < firstChapterPages; page++) {
         await command("Runtime.evaluate", {
@@ -306,6 +347,7 @@ async function main() {
       console.log(JSON.stringify({
         pagination,
         afterTurn: afterTurn.result.value,
+        restoredAfterReload: restoredLabel,
         afterChapterTurn,
       }, null, 2));
     }

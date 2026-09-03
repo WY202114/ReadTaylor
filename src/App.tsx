@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { ReaderView } from "./components/ReaderView";
 import { BookCover } from "./components/BookCover";
@@ -15,7 +15,14 @@ import {
   Trash2,
   FileText,
 } from "lucide-react";
-import { bookFromFile, loadBooks, saveBooks, type Book } from "./lib/books";
+import {
+  bookFromFile,
+  deleteReadingPosition,
+  loadBooks,
+  saveBooks,
+  saveReadingPosition,
+  type Book,
+} from "./lib/books";
 import { delFile } from "./lib/filestore";
 import { deleteNotesForBook } from "./lib/notes";
 import { deletePaginationCacheForBook } from "./lib/paginationCache";
@@ -232,9 +239,20 @@ export default function App() {
     deleteNotesForBook(id);
     deletePaginationCacheForBook(id);
     deleteBookPreferences(id);
+    deleteReadingPosition(id);
   };
 
   const openBook = (book: Book) => setReadingBook(book);
+
+  const persistReadingPosition = useCallback((lastChapterIndex: number, lastScroll: number) => {
+    if (!readingBook) return;
+    saveReadingPosition(
+      readingBook.id,
+      lastChapterIndex,
+      lastScroll,
+      readingBook.chapters.length
+    );
+  }, [readingBook]);
 
   const closeReader = (lastChapterIndex: number, lastScroll: number) => {
     if (readingBook) {
@@ -258,6 +276,7 @@ export default function App() {
           <ReaderView
             book={readingBook}
             onBack={closeReader}
+            onPositionChange={persistReadingPosition}
             isDark={isDark}
             onToggleDark={() => setIsDark((d) => !d)}
           />

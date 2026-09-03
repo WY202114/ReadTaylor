@@ -50,6 +50,7 @@ import {
 interface ReaderViewProps {
   book: Book;
   onBack: (lastChapterIndex: number, lastScroll: number) => void;
+  onPositionChange: (lastChapterIndex: number, lastScroll: number) => void;
   isDark: boolean;
   onToggleDark: () => void;
 }
@@ -341,7 +342,7 @@ function visibleTextFromRoot(doc: Document, root: Node, viewport: DOMRect, maxLe
   return pieces.join("\n").slice(0, maxLength).trim();
 }
 
-export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewProps) {
+export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDark }: ReaderViewProps) {
   const initialChapterIndex = Math.min(book.lastChapter || 0, book.chapters.length - 1);
   const initialProgress = clampProgress(book.lastScroll || 0);
   const isFidelity = book.mode === "fidelity";
@@ -392,6 +393,16 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     pageIndex: 0,
     pageCount: 1,
   });
+  const latestReadingPositionRef = useRef({
+    chapterIndex: initialChapterIndex,
+    progress: initialProgress,
+  });
+  const persistedReadingPositionRef = useRef({
+    chapterIndex: initialChapterIndex,
+    progress: initialProgress,
+  });
+  const positionSaveTimerRef = useRef<number | undefined>(undefined);
+  const onPositionChangeRef = useRef(onPositionChange);
   const [srcdoc, setSrcdoc] = useState("");
   const [srcdocRevision, setSrcdocRevision] = useState(0);
   const [rendering, setRendering] = useState(isFidelity);
@@ -413,6 +424,7 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
   const translationSourceRef = useRef<VisibleTranslationSource | null>(null);
   fontSizeRef.current = fontSize;
   speechRateRef.current = speechRate;
+  onPositionChangeRef.current = onPositionChange;
 
   const chapter = book.chapters[chapterIndex];
 
@@ -873,6 +885,49 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
     pageIndex: chapterPageIndex,
     pageCount: currentChapterPageCount,
   };
+  latestReadingPositionRef.current = {
+    chapterIndex,
+    progress: isFidelity
+      ? currentChapterPageCount > 1
+        ? chapterPageIndex / (currentChapterPageCount - 1)
+        : 0
+      : scrollProgress,
+  };
+
+  const flushReadingPosition = () => {
+    window.clearTimeout(positionSaveTimerRef.current);
+    const current = latestReadingPositionRef.current;
+    const persisted = persistedReadingPositionRef.current;
+    if (
+      current.chapterIndex === persisted.chapterIndex
+      && Math.abs(current.progress - persisted.progress) < 0.0001
+    ) return;
+    persistedReadingPositionRef.current = current;
+    onPositionChangeRef.current(current.chapterIndex, current.progress);
+  };
+
+  // 翻页或滚动后自动保存；短暂延迟可以避免连续滚动时频繁写入本地存储。
+  useEffect(() => {
+    if (isFidelity && rendering) return;
+    window.clearTimeout(positionSaveTimerRef.current);
+    positionSaveTimerRef.current = window.setTimeout(flushReadingPosition, 300);
+    return () => window.clearTimeout(positionSaveTimerRef.current);
+  }, [chapterIndex, chapterPageIndex, currentChapterPageCount, scrollProgress, isFidelity, rendering]);
+
+  // pagehide 兼容关闭标签页、刷新、手机浏览器切后台等离开方式。
+  useEffect(() => {
+    const handlePageHide = () => flushReadingPosition();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flushReadingPosition();
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      flushReadingPosition();
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
   const pagesBeforeAreReady = chapterPageCounts
     .slice(0, chapterIndex)
     .every((count) => count != null);
@@ -1340,14 +1395,17 @@ export function ReaderView({ book, onBack, isDark, onToggleDark }: ReaderViewPro
         }}
       >
         <button
-          onClick={() => onBack(
-            chapterIndex,
-            isFidelity
-              ? currentChapterPageCount > 1
-                ? chapterPageIndex / (currentChapterPageCount - 1)
-                : 0
-              : scrollProgress
-          )}
+          onClick={() => {
+            flushReadingPosition();
+            onBack(
+              chapterIndex,
+              isFidelity
+                ? currentChapterPageCount > 1
+                  ? chapterPageIndex / (currentChapterPageCount - 1)
+                  : 0
+                : scrollProgress
+            );
+          }}
           aria-label="返回书架"
           className="w-10 h-10 shrink-0 flex items-center justify-center rounded-full transition-colors"
           style={{ background: "var(--secondary)" }}
