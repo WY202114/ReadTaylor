@@ -272,8 +272,7 @@
   line-height: 1.65;
 }
 
-.reader-note-preview,
-.reader-term-preview {
+.reader-note-preview {
   position: relative;
   margin-bottom: 9px;
   border-radius: 11px;
@@ -322,7 +321,6 @@
 }
 
 .reader-note-preview p,
-.reader-term-preview p,
 .reader-study-error p {
   margin: 0;
   font-family: "Inter", sans-serif;
@@ -336,27 +334,6 @@
   color: var(--muted-foreground);
   font-family: "Inter", sans-serif;
   font-size: 9px;
-}
-
-.reader-term-preview {
-  padding: 11px 12px;
-}
-
-.reader-term-preview strong {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--foreground);
-  font-family: "Inter", sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.reader-term-preview p {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--muted-foreground);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .reader-study-language {

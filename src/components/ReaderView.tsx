@@ -95,11 +95,6 @@ type VisibleTranslationSource = {
   pageKey: string;
 };
 
-type ReadingTerm = {
-  label: string;
-  context: string;
-};
-
 const NOTE_COLORS: Array<{ id: NoteColor; label: string; hex: string; fill: string }> = [
   { id: "yellow", label: "黄色", hex: "#C58B20", fill: "rgba(236, 190, 76, 0.42)" },
   { id: "orange", label: "橙色", hex: "#C96B2C", fill: "rgba(230, 132, 62, 0.38)" },
@@ -171,15 +166,57 @@ function resolveNoteRange(root: Node, note: ReadingNote): ActiveNoteRange | null
   return { note, startOffset, endOffset };
 }
 
+function clearNoteHighlightMarks(root: Node): void {
+  const marks = (root as ParentNode).querySelectorAll?.<HTMLElement>("mark[data-readtaylor-note-highlight]");
+  marks?.forEach((mark) => {
+    const parent = mark.parentNode;
+    if (!parent) return;
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+    mark.remove();
+    parent.normalize();
+  });
+}
+
+function wrapNoteRange(doc: Document, root: Node, item: ActiveNoteRange): void {
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const segments: Array<{ node: Text; start: number; end: number }> = [];
+  let position = 0;
+  let node = walker.nextNode() as Text | null;
+  while (node) {
+    const nextPosition = position + node.data.length;
+    const start = Math.max(0, item.startOffset - position);
+    const end = Math.min(node.data.length, item.endOffset - position);
+    if (end > start) segments.push({ node, start, end });
+    if (nextPosition >= item.endOffset) break;
+    position = nextPosition;
+    node = walker.nextNode() as Text | null;
+  }
+
+  const color = noteColor(item.note.color);
+  segments.reverse().forEach(({ node: textNode, start, end }) => {
+    const selected = textNode.splitText(start);
+    selected.splitText(end - start);
+    const mark = doc.createElement("mark");
+    mark.dataset.readtaylorNoteHighlight = "true";
+    mark.dataset.noteId = item.note.id;
+    mark.dataset.noteColor = color.id;
+    selected.parentNode?.replaceChild(mark, selected);
+    mark.appendChild(selected);
+  });
+}
+
 function applyNoteHighlights(doc: Document, root: Node, notes: ReadingNote[]): ActiveNoteRange[] {
+  clearNoteHighlightMarks(root);
+  const activeRanges = notes
+    .map((note) => resolveNoteRange(root, note))
+    .filter((item): item is ActiveNoteRange => item != null);
+
   const highlightCss = doc.defaultView?.CSS as typeof CSS & {
     highlights?: { delete: (name: string) => void; set: (name: string, value: unknown) => void };
   };
   const HighlightConstructor = (doc.defaultView as Window & {
     Highlight?: new (...ranges: Range[]) => unknown;
   } | null)?.Highlight;
-  if (!highlightCss?.highlights || !HighlightConstructor) return [];
-
   let style = doc.getElementById("readtaylor-note-highlights") as HTMLStyleElement | null;
   if (!style) {
     style = doc.createElement("style");
@@ -188,27 +225,43 @@ function applyNoteHighlights(doc: Document, root: Node, notes: ReadingNote[]): A
   }
   style.textContent = NOTE_COLORS.map((color) => `
     ::highlight(readtaylor-note-${color.id}) {
-      background-color: ${color.fill};
       text-decoration: underline;
       text-decoration-color: ${color.hex};
       text-decoration-thickness: 2px;
       text-underline-offset: 2px;
     }
+    mark[data-readtaylor-note-highlight][data-note-color="${color.id}"] {
+      background: ${color.fill};
+      box-shadow: inset 0 -2px 0 ${color.hex};
+    }
   `).join("\n");
 
-  const activeRanges = notes
-    .map((note) => resolveNoteRange(root, note))
-    .filter((item): item is ActiveNoteRange => item != null);
+  style.textContent += `
+    mark[data-readtaylor-note-highlight] {
+      margin: 0;
+      padding: 0;
+      border-radius: 2px;
+      color: inherit;
+      font: inherit;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+  `;
 
   NOTE_COLORS.forEach((color) => {
     const name = `readtaylor-note-${color.id}`;
     highlightCss.highlights?.delete(name);
+    if (!highlightCss?.highlights || !HighlightConstructor) return;
     const ranges = activeRanges
       .filter((item) => noteColor(item.note.color).id === color.id)
       .map((item) => rangeFromOffsets(root, item.startOffset, item.endOffset))
       .filter((range): range is Range => range != null);
     if (ranges.length) highlightCss.highlights?.set(name, new HighlightConstructor(...ranges));
   });
+  // 同时插入轻量 mark，确保不支持或没有正确绘制 CSS Highlights 的浏览器也能看见标记。
+  [...activeRanges]
+    .sort((a, b) => b.startOffset - a.startOffset)
+    .forEach((item) => wrapNoteRange(doc, root, item));
   return activeRanges;
 }
 
@@ -226,30 +279,6 @@ function textOffsetAtPoint(doc: Document, root: Node, x: number, y: number): num
   before.selectNodeContents(root);
   before.setEnd(node, offset);
   return before.toString().length;
-}
-
-function extractReadingTerms(text: string, limit = 4): ReadingTerm[] {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (!normalized) return [];
-  const matches = normalized.match(/\b(?:[A-Z][A-Z0-9_]{2,}|[A-Z][a-z]+(?:[- ][A-Z]?[a-z]+)*|[A-Za-z]+-[A-Za-z]+)\b/g) || [];
-  const ignored = new Set(["The", "This", "That", "With", "From", "These", "Those", "And", "For"]);
-  const seen = new Set<string>();
-  const terms: ReadingTerm[] = [];
-  for (const raw of matches) {
-    const label = raw.trim();
-    const key = label.toLowerCase();
-    if (label.length < 3 || ignored.has(label) || seen.has(key)) continue;
-    seen.add(key);
-    const position = normalized.indexOf(label);
-    const contextStart = Math.max(0, position - 22);
-    const contextEnd = Math.min(normalized.length, position + label.length + 34);
-    terms.push({
-      label,
-      context: `${contextStart > 0 ? "…" : ""}${normalized.slice(contextStart, contextEnd)}${contextEnd < normalized.length ? "…" : ""}`,
-    });
-    if (terms.length >= limit) break;
-  }
-  return terms;
 }
 
 function clampProgress(value: number): number {
@@ -377,7 +406,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
   const [desktopWorkspace, setDesktopWorkspace] = useState(() => window.matchMedia("(min-width: 1280px)").matches);
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
-  const [studySections, setStudySections] = useState({ notes: true, terms: true, translation: false });
+  const [studySections, setStudySections] = useState({ notes: true, translation: false });
   const contentRef = useRef<HTMLDivElement>(null);
   const restorePositionRef = useRef({
     chapterIndex: initialChapterIndex,
@@ -866,6 +895,12 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
       if (cwin.getSelection()?.toString().trim()) {
         return;
       }
+      const noteId = (e.target as HTMLElement)?.closest?.("mark[data-readtaylor-note-highlight]")?.getAttribute("data-note-id");
+      const markedNote = notes.find((note) => note.id === noteId);
+      if (markedNote) {
+        editNote(markedNote);
+        return;
+      }
       const highlightedNote = noteAtPoint(cdoc, cdoc.body, e.clientX, e.clientY);
       if (highlightedNote) {
         editNote(highlightedNote);
@@ -958,11 +993,6 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     note.chapterId === chapter.id
     && (!isFidelity || note.pageIndex == null || note.pageIndex === chapterPageIndex)
   ));
-  const studyTerms = extractReadingTerms(
-    isFidelity
-      ? iframeRef.current?.contentDocument?.body?.innerText || ""
-      : chapter.content
-  );
 
   const currentPageTranslationSource = (): VisibleTranslationSource => {
     if (isFidelity) {
@@ -1656,6 +1686,12 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
             if (window.getSelection()?.toString().trim()) {
               return;
             }
+            const noteId = (event.target as HTMLElement)?.closest?.("mark[data-readtaylor-note-highlight]")?.getAttribute("data-note-id");
+            const markedNote = notes.find((note) => note.id === noteId);
+            if (markedNote) {
+              editNote(markedNote);
+              return;
+            }
             const highlightedNote = contentRef.current
               ? noteAtPoint(document, contentRef.current, event.clientX, event.clientY)
               : null;
@@ -2331,32 +2367,6 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
                         {note.body && <p>{note.body}</p>}
                         <time>{new Date(note.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time>
                       </article>
-                    ))}
-                  </div>
-                )}
-              </section>
-
-              <section className="reader-study-section">
-                <button
-                  onClick={() => toggleStudySection("terms")}
-                  className="reader-study-section-heading"
-                  aria-expanded={studySections.terms}
-                >
-                  <span>本页术语</span>
-                  <span className="flex items-center gap-2">
-                    {studyTerms.length > 0 && <small>{studyTerms.length}</small>}
-                    {studySections.terms ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-                  </span>
-                </button>
-                {studySections.terms && (
-                  <div className="reader-study-section-content">
-                    {studyTerms.length === 0 ? (
-                      <div className="reader-study-empty">本页没有识别到需要单独查看的外文术语。</div>
-                    ) : studyTerms.map((term) => (
-                      <div key={term.label} className="reader-term-preview">
-                        <strong>{term.label}</strong>
-                        <p>{term.context}</p>
-                      </div>
                     ))}
                   </div>
                 )}
