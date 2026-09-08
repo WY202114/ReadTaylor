@@ -330,7 +330,7 @@ async function main() {
                 && Number.isFinite(Number(line.split(" / ")[0]))
                 && Number.isFinite(Number(line.split(" / ")[1]))
               )) || "",
-              chapterTitle: lines[0] || "",
+              chapterTitle: document.querySelector('iframe:not([aria-hidden])')?.title || "",
             };
           })()`,
           returnByValue: true,

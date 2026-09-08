@@ -12,6 +12,14 @@ export interface Chapter {
   isCover?: boolean; // 文字型 EPUB 的封面章节仍需按整页显示，不能被正文分页切开
 }
 
+export interface ReadingPage {
+  index: number;
+  count: number;
+  width: number;
+  height: number;
+  fontSize: number;
+}
+
 export interface Book {
   id: string;
   title: string;
@@ -22,6 +30,7 @@ export interface Book {
   progress: number; // 0-100
   lastChapter: number;
   lastScroll?: number; // 0-1，章节内的阅读位置
+  lastPage?: ReadingPage;
   addedAt: number;
   mode?: "text" | "fidelity"; // 缺省按 text 处理；EPUB 为 fidelity（原版渲染）
   layout?: "reflowable" | "fixed"; // EPUB 排版：文字重排或固定页面（漫画 / 扫描 PDF）
@@ -39,6 +48,7 @@ const READING_POSITION_STORAGE_KEY = "readtaylor.reading-positions.v1";
 interface SavedReadingPosition {
   lastChapter: number;
   lastScroll: number;
+  lastPage?: ReadingPage;
   progress: number;
 }
 
@@ -423,6 +433,7 @@ export function loadBooks(): Book[] {
         ...book,
         lastChapter: Math.min(Math.max(0, saved.lastChapter), Math.max(0, book.chapters.length - 1)),
         lastScroll: Math.min(1, Math.max(0, saved.lastScroll)),
+        lastPage: saved.lastPage,
         progress: Math.min(100, Math.max(0, saved.progress)),
       };
     });
@@ -447,7 +458,8 @@ export function saveReadingPosition(
   bookId: string,
   lastChapter: number,
   lastScroll: number,
-  chapterCount: number
+  chapterCount: number,
+  lastPage?: ReadingPage
 ): boolean {
   try {
     const safeChapterCount = Math.max(1, chapterCount);
@@ -457,6 +469,7 @@ export function saveReadingPosition(
     positions[bookId] = {
       lastChapter: safeChapter,
       lastScroll: safeScroll,
+      lastPage,
       progress: Math.round(((safeChapter + 1) / safeChapterCount) * 100),
     };
     localStorage.setItem(READING_POSITION_STORAGE_KEY, JSON.stringify(positions));

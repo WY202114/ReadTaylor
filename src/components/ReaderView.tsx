@@ -27,7 +27,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import type { Book } from "../lib/books";
+import type { Book, ReadingPage } from "../lib/books";
 import { renderChapter, resolveInternalIndex, cleanup as cleanupEpub } from "../lib/epubRender";
 import { paginateFrame, scrollFrameToPage } from "../lib/epubPagination";
 import { loadNotes, saveNotes, type NoteColor, type ReadingNote } from "../lib/notes";
@@ -49,15 +49,15 @@ import {
 
 interface ReaderViewProps {
   book: Book;
-  onBack: (lastChapterIndex: number, lastScroll: number) => void;
-  onPositionChange: (lastChapterIndex: number, lastScroll: number) => void;
+  onBack: (lastChapterIndex: number, lastScroll: number, lastPage?: ReadingPage) => void;
+  onPositionChange: (lastChapterIndex: number, lastScroll: number, lastPage?: ReadingPage) => void;
   isDark: boolean;
   onToggleDark: () => void;
 }
 
 type PendingPage =
   | { chapterIndex: number; mode: "first" | "last" }
-  | { chapterIndex: number; mode: "progress"; progress: number };
+  | { chapterIndex: number; mode: "progress"; progress: number; page?: ReadingPage };
 
 type SelectionTarget = {
   text: string;
@@ -384,6 +384,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
   // 等阅读区拿到准确尺寸后再决定读取缓存还是重新测量。
   const [measurementIndex, setMeasurementIndex] = useState(-1);
   const [measurementSrcdoc, setMeasurementSrcdoc] = useState("");
+  const [measurementTarget, setMeasurementTarget] = useState("");
   const [layoutRevision, setLayoutRevision] = useState(0);
   const [fontSize, setFontSize] = useState(() => loadBookFontSize(book.id, isFidelity ? 16 : 18));
   const [showChapters, setShowChapters] = useState(false);
@@ -416,6 +417,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     chapterIndex: initialChapterIndex,
     mode: "progress",
     progress: initialProgress,
+    page: book.lastPage,
   });
   const paginationPositionRef = useRef({
     chapterIndex: initialChapterIndex,
@@ -425,14 +427,18 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
   const latestReadingPositionRef = useRef({
     chapterIndex: initialChapterIndex,
     progress: initialProgress,
+    page: book.lastPage,
   });
   const persistedReadingPositionRef = useRef({
     chapterIndex: initialChapterIndex,
     progress: initialProgress,
+    page: book.lastPage,
   });
   const positionSaveTimerRef = useRef<number | undefined>(undefined);
   const onPositionChangeRef = useRef(onPositionChange);
   const [srcdoc, setSrcdoc] = useState("");
+  const [srcdocTarget, setSrcdocTarget] = useState("");
+  const renderTarget = `${chapterIndex}:${layoutRevision}`;
   const [srcdocRevision, setSrcdocRevision] = useState(0);
   const [rendering, setRendering] = useState(isFidelity);
   const [renderError, setRenderError] = useState("");
@@ -475,6 +481,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
       .then((html) => {
         if (!cancelled) {
           setSrcdoc(html);
+          setSrcdocTarget(`${chapterIndex}:${layoutRevision}`);
           // Chromium 偶尔只更新 srcdoc 属性却不重载内容，改变 key 可确保章节真正切换。
           setSrcdocRevision((revision) => revision + 1);
         }
@@ -496,7 +503,11 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     let cancelled = false;
     setMeasurementSrcdoc("");
     renderChapter(book, measurementIndex)
-      .then((html) => !cancelled && setMeasurementSrcdoc(html))
+      .then((html) => {
+        if (cancelled) return;
+        setMeasurementSrcdoc(html);
+        setMeasurementTarget(`${measurementIndex}:${layoutRevision}`);
+      })
       .catch(() => {
         if (!cancelled) {
           setChapterPageCounts((previous) => {
@@ -516,6 +527,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
 
   const onMeasurementLoad = async () => {
     const frame = measurementIframeRef.current;
+    const doc = frame?.contentDocument;
     const measuredChapter = measurementIndex;
     if (!frame || measuredChapter < 0) return;
     const measuredChapterInfo = book.chapters[measuredChapter];
@@ -525,7 +537,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
       fontSize,
       Boolean(measuredChapterInfo?.isCover) || measuredChapter === 0
     );
-    if (measuredChapter !== measurementIndex) return;
+    if (measurementIframeRef.current !== frame || frame.contentDocument !== doc || !frame.isConnected) return;
     setChapterPageCounts((previous) => {
       const next = [...previous];
       next[measuredChapter] = pageCount;
@@ -568,13 +580,14 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
       resizeTimer = window.setTimeout(() => {
         const cached = fixedLayout ? null : loadPaginationCache(book, width, height, fontSizeRef.current);
         const position = paginationPositionRef.current;
-        pendingPageRef.current = {
+        if (pendingPageRef.current.chapterIndex !== position.chapterIndex) pendingPageRef.current = {
           chapterIndex: position.chapterIndex,
           mode: "progress",
           progress: position.pageCount > 1
             ? position.pageIndex / (position.pageCount - 1)
             : 0,
         };
+        setRendering(true);
         setChapterPageIndex(0);
         setChapterPageCounts(fixedLayout
           ? book.chapters.map(() => 1)
@@ -605,13 +618,14 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     if (!width || !height) return;
 
     const position = paginationPositionRef.current;
-    pendingPageRef.current = {
+    if (pendingPageRef.current.chapterIndex !== position.chapterIndex) pendingPageRef.current = {
       chapterIndex: position.chapterIndex,
       mode: "progress",
       progress: position.pageCount > 1
         ? position.pageIndex / (position.pageCount - 1)
         : 0,
     };
+    setRendering(true);
     const cached = loadPaginationCache(book, width, height, fontSize);
     setChapterPageIndex(0);
     setChapterPageCounts(cached || book.chapters.map(() => null));
@@ -819,13 +833,15 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     const frame = iframeRef.current;
     const cdoc = frame?.contentDocument;
     const cwin = frame?.contentWindow;
-    if (!cdoc || !cwin) return;
+    if (!cdoc || !cwin || !srcdoc || srcdocTarget !== renderTarget) return;
     const { pageCount } = await paginateFrame(
       frame,
       fixedLayout,
       fontSize,
       Boolean(chapter.isCover) || chapterIndex === 0
     );
+    // A chapter or layout change can detach this frame while fonts are loading.
+    if (iframeRef.current !== frame || frame.contentDocument !== cdoc || !frame.isConnected) return;
     setChapterPageCounts((previous) => {
       const next = [...previous];
       next[chapterIndex] = pageCount;
@@ -838,7 +854,12 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
       if (pending.mode === "last") targetPage = pageCount - 1;
       else if (pending.mode === "first") targetPage = 0;
       else if (pending.mode === "progress") {
-        targetPage = Math.round((pageCount - 1) * pending.progress);
+        const saved = pending.page;
+        targetPage = saved && Number.isInteger(saved.index) && saved.index >= 0
+          && saved.count === pageCount && saved.width === frame.clientWidth
+          && saved.height === frame.clientHeight && saved.fontSize === fontSize
+          ? Math.min(saved.index, pageCount - 1)
+          : Math.round((pageCount - 1) * pending.progress);
       }
       pendingPageRef.current = { chapterIndex: -1, mode: "first" };
     }
@@ -920,13 +941,22 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     pageIndex: chapterPageIndex,
     pageCount: currentChapterPageCount,
   };
-  latestReadingPositionRef.current = {
+  // Only a fully restored, visible chapter can replace the durable bookmark.
+  if (!isFidelity || (!rendering && srcdocTarget === renderTarget
+    && pendingPageRef.current.chapterIndex !== chapterIndex)) latestReadingPositionRef.current = {
     chapterIndex,
     progress: isFidelity
       ? currentChapterPageCount > 1
         ? chapterPageIndex / (currentChapterPageCount - 1)
         : 0
       : scrollProgress,
+    page: isFidelity ? {
+      index: chapterPageIndex,
+      count: currentChapterPageCount,
+      width: iframeRef.current?.clientWidth || 0,
+      height: iframeRef.current?.clientHeight || 0,
+      fontSize,
+    } : undefined,
   };
 
   const flushReadingPosition = () => {
@@ -936,9 +966,10 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     if (
       current.chapterIndex === persisted.chapterIndex
       && Math.abs(current.progress - persisted.progress) < 0.0001
+      && JSON.stringify(current.page) === JSON.stringify(persisted.page)
     ) return;
     persistedReadingPositionRef.current = current;
-    onPositionChangeRef.current(current.chapterIndex, current.progress);
+    onPositionChangeRef.current(current.chapterIndex, current.progress, current.page);
   };
 
   // 翻页或滚动后自动保存；短暂延迟可以避免连续滚动时频繁写入本地存储。
@@ -1428,12 +1459,9 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
           onClick={() => {
             flushReadingPosition();
             onBack(
-              chapterIndex,
-              isFidelity
-                ? currentChapterPageCount > 1
-                  ? chapterPageIndex / (currentChapterPageCount - 1)
-                  : 0
-                : scrollProgress
+              latestReadingPositionRef.current.chapterIndex,
+              latestReadingPositionRef.current.progress,
+              latestReadingPositionRef.current.page
             );
           }}
           aria-label="返回书架"
@@ -1540,7 +1568,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
               >
                 {renderError}
               </div>
-            ) : (
+            ) : srcdoc && srcdocTarget === renderTarget ? (
               <iframe
                 key={`${book.id}-${chapterIndex}-${layoutRevision}-${srcdocRevision}`}
                 ref={iframeRef}
@@ -1550,8 +1578,9 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
                 sandbox="allow-same-origin"
                 style={{ width: "100%", height: "100%", border: "none", background: "#faf6ef", display: "block" }}
               />
-            )}
-            {!fixedLayout && measurementIndex >= 0 && measurementSrcdoc && (
+            ) : null}
+            {!fixedLayout && measurementIndex >= 0 && measurementSrcdoc
+              && measurementTarget === `${measurementIndex}:${layoutRevision}` && (
               <iframe
                 key={`measure-${book.id}-${measurementIndex}-${layoutRevision}`}
                 ref={measurementIframeRef}
