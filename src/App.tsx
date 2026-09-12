@@ -6,8 +6,6 @@ import {
   BookOpen,
   Search,
   User,
-  Sun,
-  Moon,
   Clock,
   TrendingUp,
   Upload,
@@ -42,15 +40,6 @@ import {
 const APP_VERSION = "3.0.2";
 
 type Tab = "library" | "profile";
-
-function greeting(): string {
-  const h = new Date().getHours();
-  if (h < 6) return "夜读愉快";
-  if (h < 11) return "早上好";
-  if (h < 14) return "午安";
-  if (h < 18) return "下午好";
-  return "晚上好";
-}
 
 export default function App() {
   const [isDark, setIsDark] = useState(false);
@@ -323,25 +312,7 @@ export default function App() {
                 transition={{ duration: 0.2 }}
                 style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}
               >
-                {/* Header */}
-                <div style={{ padding: "8px 24px 16px" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--library-header-gap, 20px)" }}>
-                    <div>
-                      <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", color: "var(--muted-foreground)", margin: 0 }}>
-                        {greeting()}
-                      </p>
-                      <h1 style={{ fontFamily: "Lora, serif", fontSize: "24px", fontWeight: 600, color: "var(--foreground)", margin: 0 }}>
-                        我的书架
-                      </h1>
-                    </div>
-                    <button
-                      onClick={() => setIsDark((d) => !d)}
-                      style={{ width: "40px", height: "40px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "50%", background: "var(--secondary)", border: "none", cursor: "pointer" }}
-                    >
-                      {isDark ? <Sun size={18} style={{ color: "var(--accent)" }} /> : <Moon size={18} style={{ color: "var(--muted-foreground)" }} />}
-                    </button>
-                  </div>
-
+                <div style={{ padding: "4px 24px 14px" }}>
                   {/* Search */}
                   <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "var(--library-search-padding, 12px 16px)", borderRadius: "12px", background: "var(--secondary)" }}>
                     <Search size={16} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
@@ -540,7 +511,7 @@ export default function App() {
         </div>
 
         {/* Tab bar */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around", padding: "12px 24px 20px", borderTop: "1px solid var(--border)", background: "var(--card)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around", padding: "5px 24px max(6px, env(safe-area-inset-bottom))", borderTop: "1px solid var(--border)", background: "var(--card)" }}>
           {([
             { id: "library" as Tab, icon: BookOpen, label: "书架" },
             { id: "profile" as Tab, icon: User, label: "我的" },
@@ -548,10 +519,10 @@ export default function App() {
             <button
               key={id}
               onClick={() => setActiveTab(id)}
-              style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", background: "none", border: "none", cursor: "pointer", padding: "4px 16px" }}
+              style={{ minWidth: "64px", minHeight: "42px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "1px", background: "none", border: "none", cursor: "pointer", padding: "2px 14px" }}
             >
               <Icon
-                size={22}
+                size={19}
                 style={{
                   color: activeTab === id ? "var(--accent)" : "var(--muted-foreground)",
                   fill: activeTab === id ? "var(--accent)" : "none",
@@ -559,7 +530,7 @@ export default function App() {
                   transition: "all 0.2s",
                 }}
               />
-              <span style={{ fontFamily: "Inter, sans-serif", fontSize: "10px", color: activeTab === id ? "var(--accent)" : "var(--muted-foreground)", transition: "color 0.2s" }}>
+              <span style={{ fontFamily: "Inter, sans-serif", fontSize: "9px", lineHeight: 1.2, color: activeTab === id ? "var(--accent)" : "var(--muted-foreground)", transition: "color 0.2s" }}>
                 {label}
               </span>
             </button>
@@ -573,7 +544,7 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
-              style={{ position: "absolute", left: "24px", right: "24px", bottom: "92px", padding: "12px 16px", borderRadius: "12px", background: "var(--foreground)", color: "var(--background)", fontFamily: "Inter, sans-serif", fontSize: "13px", lineHeight: 1.5, textAlign: "center", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}
+              style={{ position: "absolute", left: "24px", right: "24px", bottom: "64px", padding: "12px 16px", borderRadius: "12px", background: "var(--foreground)", color: "var(--background)", fontFamily: "Inter, sans-serif", fontSize: "13px", lineHeight: 1.5, textAlign: "center", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}
             >
               {toast}
             </motion.div>
