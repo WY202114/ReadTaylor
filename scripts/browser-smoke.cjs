@@ -105,6 +105,62 @@ async function main() {
     }));
     console.log(JSON.stringify(summary, null, 2));
 
+    if (process.env.READTAYLOR_CHECK_FONT_SIZE === "1") {
+      const opened = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const title = "ReadTaylor 原样排版测试书";
+          const button = [...document.querySelectorAll("button")]
+            .find((item) => item.textContent.includes(title));
+          if (!button) return false;
+          button.click();
+          return true;
+        })()`,
+        returnByValue: true,
+      });
+      if (!opened.result.value) throw new Error("Font-size test book could not be opened.");
+
+      const readFontState = async () => {
+        for (let attempt = 0; attempt < 50; attempt++) {
+          await delay(120);
+          const result = await command("Runtime.evaluate", {
+            expression: `(() => {
+              const frame = [...document.querySelectorAll("iframe")]
+                .find((item) => item.style.visibility !== "hidden" && item.contentDocument?.body);
+              const fixed = frame?.contentDocument?.querySelector("#fixed-font-test");
+              const increase = document.querySelector('button[aria-label="增大字号"]');
+              const value = increase?.previousElementSibling?.textContent?.trim() || "";
+              return fixed && increase ? {
+                fontSize: parseFloat(frame.contentWindow.getComputedStyle(fixed).fontSize),
+                controlValue: Number(value),
+              } : null;
+            })()`,
+            returnByValue: true,
+          });
+          if (result.result.value) return result.result.value;
+        }
+        return null;
+      };
+
+      const before = await readFontState();
+      if (!before) throw new Error("Font-size test paragraph was not rendered.");
+      await command("Runtime.evaluate", {
+        expression: `document.querySelector('button[aria-label="增大字号"]')?.click()`,
+      });
+      let after = null;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        after = await readFontState();
+        if (after && after.controlValue === before.controlValue + 1) break;
+      }
+      if (
+        !after
+        || after.controlValue !== before.controlValue + 1
+        || after.fontSize <= before.fontSize
+      ) {
+        throw new Error(`Fixed EPUB font size did not scale: ${JSON.stringify({ before, after })}`);
+      }
+      console.log(JSON.stringify({ fontSize: { before, after } }, null, 2));
+    }
+
     if (process.env.READTAYLOR_CHECK_MOBILE_LAYOUT === "1") {
       const firstBook = books[0];
       const opened = await command("Runtime.evaluate", {

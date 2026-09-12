@@ -7,6 +7,54 @@ function nextFrame(win: Window): Promise<void> {
   return new Promise((resolve) => win.requestAnimationFrame(() => resolve()));
 }
 
+const BASE_FONT_SIZE_ATTRIBUTE = "data-readtaylor-base-font-size";
+
+function numericFontSize(win: Window, element: Element): number | null {
+  const value = Number.parseFloat(win.getComputedStyle(element).fontSize);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function hasDirectText(element: Element): boolean {
+  return Array.from(element.childNodes).some((node) => (
+    node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim())
+  ));
+}
+
+function applyDocumentFontScale(doc: Document, targetFontSize: number): void {
+  const win = doc.defaultView;
+  const body = doc.body;
+  if (!win || !body) return;
+
+  const storedBodySize = Number.parseFloat(body.getAttribute(BASE_FONT_SIZE_ATTRIBUTE) || "");
+  const bodyBaseSize = Number.isFinite(storedBodySize) && storedBodySize > 0
+    ? storedBodySize
+    : numericFontSize(win, body) || 16;
+  body.setAttribute(BASE_FONT_SIZE_ATTRIBUTE, String(bodyBaseSize));
+
+  const elements = [doc.documentElement, body, ...Array.from(body.querySelectorAll("*"))]
+    .filter((element): element is HTMLElement => (
+      element instanceof win.HTMLElement
+      && !element.matches("script, style, noscript")
+      && !element.closest("svg, math")
+      && (element === doc.documentElement || element === body || hasDirectText(element))
+    ));
+
+  const baselines = elements.map((element) => {
+    const storedSize = Number.parseFloat(element.getAttribute(BASE_FONT_SIZE_ATTRIBUTE) || "");
+    const baseSize = Number.isFinite(storedSize) && storedSize > 0
+      ? storedSize
+      : numericFontSize(win, element);
+    if (baseSize) element.setAttribute(BASE_FONT_SIZE_ATTRIBUTE, String(baseSize));
+    return { element, baseSize };
+  });
+  const scale = targetFontSize / bodyBaseSize;
+
+  baselines.forEach(({ element, baseSize }) => {
+    if (!baseSize) return;
+    element.style.setProperty("font-size", `${Math.max(1, baseSize * scale)}px`, "important");
+  });
+}
+
 export async function paginateFrame(
   frame: HTMLIFrameElement,
   fixedLayout: boolean,
@@ -67,6 +115,10 @@ export async function paginateFrame(
       }
     `;
   } else {
+    // EPUB styles often assign fixed px/pt sizes to paragraphs and spans. Scaling only
+    // html/body leaves those books visually unchanged, so preserve each text element's
+    // original size ratio and apply the reader setting to the whole typography tree.
+    applyDocumentFontScale(doc, fontSize);
     const compactLayout = frame.clientWidth < 480;
     const sidePadding = compactLayout
       ? Math.max(16, Math.round(frame.clientWidth * 0.05))
