@@ -558,7 +558,8 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
 
   // 首次进入优先读取相同尺寸的分页缓存；只有未命中或尺寸变化时才重新计算。
   useEffect(() => {
-    if (!isFidelity || !viewportRef.current) return;
+    const viewport = viewportRef.current;
+    if (!isFidelity || !viewport) return;
     let previousSize = "";
     let resizeTimer = 0;
     const observer = new ResizeObserver(([entry]) => {
@@ -598,7 +599,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
         setLayoutRevision((value) => value + 1);
       }, 180);
     });
-    observer.observe(viewportRef.current);
+    observer.observe(viewport);
     return () => {
       observer.disconnect();
       window.clearTimeout(resizeTimer);

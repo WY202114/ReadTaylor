@@ -114,6 +114,58 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media(min-width:1600px) { .library-book-grid { grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); } }
 @media(max-width:1150px) { .library-navigation { flex-basis:200px; padding-left:16px; padding-right:16px; }.library-page,.profile-page { padding:32px; }.reading-overview { grid-template-columns:minmax(0,1fr) 175px; gap:14px; }.reading-feature { padding:25px; }.reading-summary { padding:25px 19px; }.book-still-life { width:125px; }.feature-copy h2 { font-size:24px; }.library-brand { font-size:19px; } }
 @media(max-width:850px) and (min-width:701px) { .library-navigation { flex-basis:78px; padding:28px 14px; }.library-brand>span:last-child,.navigation-caption,.navigation-item span,.navigation-item small,.navigation-bottom .local-note,.theme-button span,.app-version { display:none; }.library-navigation nav { margin-top:40px; }.navigation-item,.theme-button { justify-content:center; padding:13px; }.reading-overview { grid-template-columns:minmax(0,1fr) 160px; }.reading-feature { gap:12px; }.book-still-life { width:100px; transform:scale(.85); transform-origin:right center; } }
+/* Desktop bookshelf stays inside one viewport. Only the book grid scrolls when it grows. */
+@media(min-width:701px) {
+  .library-main { height:100dvh; overflow:hidden; }
+  .library-page {
+    display:flex;
+    flex-direction:column;
+    height:100dvh;
+    overflow:hidden;
+    padding:clamp(20px,3.4vh,36px) clamp(28px,3.6vw,56px) 18px;
+  }
+  .library-heading { flex:0 0 auto; margin-bottom:clamp(14px,2.2vh,24px); }
+  .library-heading h1 { font-size:clamp(29px,2.2vw,36px); line-height:1.2; }
+  .library-heading .eyebrow { margin-bottom:8px; }
+  .heading-description { margin-top:8px; }
+  .reading-overview {
+    flex:0 0 clamp(162px,25vh,210px);
+    min-height:0;
+    margin-bottom:clamp(15px,2.4vh,25px);
+  }
+  .reading-feature { min-height:0; height:100%; padding:clamp(20px,2.8vh,28px) 32px; }
+  .feature-copy h2 { font-size:clamp(22px,1.8vw,28px); line-height:1.35; }
+  .feature-author { margin:8px 0 12px; }
+  .feature-progress { margin-bottom:8px; }
+  .feature-cover { width:clamp(82px,7vw,104px); height:clamp(120px,17vh,148px); }
+  .book-still-life { height:150px; transform:scale(.82); transform-origin:center right; }
+  .reading-summary { height:100%; padding:clamp(18px,2.6vh,25px); }
+  .summary-total { padding-bottom:clamp(10px,1.7vh,16px); }
+  .summary-total strong { font-size:clamp(39px,3.5vw,50px); }
+  .summary-details { padding-top:clamp(10px,1.7vh,17px); }
+  .shelf-section { display:flex; flex:1 1 auto; min-height:0; flex-direction:column; }
+  .shelf-toolbar { flex:0 0 auto; padding-bottom:12px; margin-bottom:14px; }
+  .library-book-grid {
+    flex:1 1 auto;
+    min-height:0;
+    overflow-y:auto;
+    align-content:start;
+    grid-template-columns:repeat(auto-fill,minmax(124px,158px));
+    justify-content:start;
+    gap:18px 22px;
+    padding:2px 8px 12px 0;
+    scrollbar-width:thin;
+    scrollbar-color:var(--muted) transparent;
+  }
+  .book-display { padding:11px 16px; margin-bottom:9px; }
+  .book-open h3 { font-size:12px; line-height:1.4; margin-bottom:3px; }
+  .book-open p { margin-bottom:6px; }
+  .book-metadata { font-size:8px; }
+  .book-progress { margin-top:6px; }
+  .shelf-empty { flex:1 1 auto; min-height:0; justify-content:center; padding:12px; }
+  .library-footer { flex:0 0 auto; padding-top:10px; margin-top:10px; }
+  .profile-page { height:100dvh; overflow:auto; }
+}
 @media(max-width:700px) {
  .library-shell { flex-direction:column; }.library-navigation { flex:0 0 auto; order:2; padding:7px 20px max(8px,env(safe-area-inset-bottom)); border-right:0; border-top:1px solid var(--border); background:var(--card); }.library-brand,.navigation-caption,.navigation-bottom { display:none; }.library-navigation nav { display:flex; justify-content:space-around; gap:18px; }.navigation-item { width:auto; min-height:44px; padding:9px 24px; font-size:12px; }.navigation-item small { display:none; }.navigation-item.is-active { color:var(--accent); background:var(--secondary); }.library-main { min-height:0; }.library-page,.profile-page { padding:max(26px,env(safe-area-inset-top)) 22px 22px; }.library-heading { gap:12px; margin-bottom:25px; }.library-heading h1 { font-size:30px; }.eyebrow { font-size:8px; letter-spacing:1.4px; }.heading-description { font-size:10px; line-height:1.8; margin-top:9px; }.primary-button { padding:11px 13px; font-size:11px; }.reading-overview { grid-template-columns:1fr; gap:12px; margin-bottom:28px; }.reading-feature { min-height:220px; padding:25px 22px; gap:12px; }.feature-copy h2 { font-size:24px; }.feature-author { font-size:10px; }.book-still-life { width:112px; transform:scale(.85); transform-origin:right center; margin-left:-10px; }.reading-summary { display:flex; align-items:center; gap:20px; padding:18px 20px; }.reading-summary>.eyebrow { display:none; }.summary-total { padding:0; gap:8px; }.summary-total strong { font-size:34px; letter-spacing:-1px; }.summary-details { flex:1; border-top:0; border-left:1px solid var(--border); padding:0 0 0 20px; gap:10px; }.summary-details div { gap:4px; }.summary-details div+div { border:0; padding:0; }.summary-details strong { font-size:17px; }.summary-details span,.summary-total>span { font-size:9px; }.shelf-toolbar { gap:12px; padding-bottom:15px; margin-bottom:22px; }.shelf-toolbar h2 { font-size:15px; gap:6px; }.shelf-search { width:175px; padding:8px; gap:6px; }.library-book-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px 18px; }.book-display { padding:16px 20px; }.book-remove { opacity:1; }.feature-cover { width:90px; height:135px; }.library-footer { font-size:9px; }.app-toast { bottom:85px; }.profile-stats>div { padding:20px 15px; }.profile-stats strong { font-size:30px; }.settings-list button { padding:18px 15px; gap:18px; }
 }
