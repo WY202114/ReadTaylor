@@ -422,7 +422,7 @@ export default function App() {
                         )}
                       </div>
 
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                      <div className="library-book-grid">
                         {filteredBooks.map((book) => (
                           <div key={book.id} style={{ position: "relative" }}>
                             <button

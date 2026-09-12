@@ -41,6 +41,20 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+.library-book-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 180px));
+  gap: 20px 16px;
+  justify-content: start;
+}
+
+@media (max-width: 420px) {
+  .library-book-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+}
+
 .reader-workspace {
   display: grid;
   grid-template-columns: clamp(190px, 12vw, 232px) minmax(0, 1fr) clamp(300px, 20vw, 380px);
