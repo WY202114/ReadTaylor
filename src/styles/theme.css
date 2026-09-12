@@ -48,6 +48,23 @@
   justify-content: start;
 }
 
+@media (min-width: 421px) and (max-height: 960px) {
+  .library-book-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 140px));
+    gap: 16px;
+  }
+}
+
+@media (min-width: 421px) and (max-height: 800px) {
+  .library-page {
+    --library-header-gap: 12px;
+    --library-search-padding: 8px 16px;
+    --library-continue-gap: 16px;
+    --library-continue-label-gap: 8px;
+    --library-content-bottom: 12px;
+  }
+}
+
 @media (max-width: 420px) {
   .library-book-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

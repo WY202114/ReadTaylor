@@ -316,6 +316,7 @@ export default function App() {
             {activeTab === "library" && (
               <motion.div
                 key="library"
+                className="library-page"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
@@ -324,7 +325,7 @@ export default function App() {
               >
                 {/* Header */}
                 <div style={{ padding: "8px 24px 16px" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--library-header-gap, 20px)" }}>
                     <div>
                       <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", color: "var(--muted-foreground)", margin: 0 }}>
                         {greeting()}
@@ -342,7 +343,7 @@ export default function App() {
                   </div>
 
                   {/* Search */}
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 16px", borderRadius: "12px", background: "var(--secondary)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "var(--library-search-padding, 12px 16px)", borderRadius: "12px", background: "var(--secondary)" }}>
                     <Search size={16} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
                     <input
                       value={searchQuery}
@@ -353,7 +354,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ flex: 1, overflowY: "auto", padding: "0 24px 16px", scrollbarWidth: "none" }}>
+                <div style={{ flex: 1, overflowY: "auto", padding: "0 24px var(--library-content-bottom, 16px)", scrollbarWidth: "none" }}>
                   {books.length === 0 ? (
                     /* Empty state — 应用不提供书籍，引导上传 */
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "40px 12px" }}>
@@ -377,8 +378,8 @@ export default function App() {
                     <>
                       {/* Continue reading */}
                       {readingBooks.length > 0 && !searchQuery && (
-                        <div style={{ marginBottom: "24px" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+                        <div style={{ marginBottom: "var(--library-continue-gap, 24px)" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "var(--library-continue-label-gap, 12px)" }}>
                             <Clock size={14} style={{ color: "var(--accent)" }} />
                             <span style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", fontWeight: 500, color: "var(--muted-foreground)" }}>继续阅读</span>
                           </div>
