@@ -31,6 +31,7 @@ export interface Book {
   lastChapter: number;
   lastScroll?: number; // 0-1，章节内的阅读位置
   lastPage?: ReadingPage;
+  lastReadAt?: number; // 最近一次打开或阅读该书的时间，用于“继续阅读”排序
   addedAt: number;
   mode?: "text" | "fidelity"; // 缺省按 text 处理；EPUB 为 fidelity（原版渲染）
   layout?: "reflowable" | "fixed"; // EPUB 排版：文字重排或固定页面（漫画 / 扫描 PDF）
@@ -50,6 +51,7 @@ interface SavedReadingPosition {
   lastScroll: number;
   lastPage?: ReadingPage;
   progress: number;
+  lastReadAt?: number;
 }
 
 type SavedReadingPositions = Record<string, SavedReadingPosition>;
@@ -435,6 +437,7 @@ export function loadBooks(): Book[] {
         lastScroll: Math.min(1, Math.max(0, saved.lastScroll)),
         lastPage: saved.lastPage,
         progress: Math.min(100, Math.max(0, saved.progress)),
+        lastReadAt: saved.lastReadAt ?? book.lastReadAt,
       };
     });
   } catch {
@@ -471,6 +474,7 @@ export function saveReadingPosition(
       lastScroll: safeScroll,
       lastPage,
       progress: Math.round(((safeChapter + 1) / safeChapterCount) * 100),
+      lastReadAt: Date.now(),
     };
     localStorage.setItem(READING_POSITION_STORAGE_KEY, JSON.stringify(positions));
     return true;

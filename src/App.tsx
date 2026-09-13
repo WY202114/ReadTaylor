@@ -97,6 +97,10 @@ export default function App() {
     (b) => b.title.includes(searchQuery) || b.author.includes(searchQuery)
   );
   const readingBooks = books.filter((b) => b.progress > 0 && b.progress < 100);
+  const continueReadingBook = readingBooks.reduce<Book | undefined>((latest, book) => {
+    if (!latest) return book;
+    return (book.lastReadAt ?? 0) > (latest.lastReadAt ?? 0) ? book : latest;
+  }, undefined);
   const finishedBooks = books.filter((b) => b.progress >= 100);
   const desktopMode = isDesktopApp();
   const supportedFormatLabel = desktopMode
@@ -133,6 +137,7 @@ export default function App() {
           book.progress = existing.progress;
           book.lastChapter = Math.min(existing.lastChapter, book.chapters.length - 1);
           book.lastScroll = existing.lastScroll || 0;
+          book.lastReadAt = existing.lastReadAt;
         }
         imported.push(book);
       }
@@ -182,6 +187,7 @@ export default function App() {
           book.progress = existing.progress;
           book.lastChapter = Math.min(existing.lastChapter, book.chapters.length - 1);
           book.lastScroll = existing.lastScroll || 0;
+          book.lastReadAt = existing.lastReadAt;
         }
         if (convertedLocally) {
           book.fileType = prepared.sourceExtension.toUpperCase();
@@ -234,7 +240,7 @@ export default function App() {
     deleteReadingPosition(id);
   };
 
-  const openBook = (book: Book) => setReadingBook(book);
+  const openBook = (book: Book) => setReadingBook({ ...book, lastReadAt: Date.now() });
 
   const persistReadingPosition = useCallback((lastChapterIndex: number, lastScroll: number, lastPage?: Book["lastPage"]) => {
     if (!readingBook) return;
@@ -254,7 +260,7 @@ export default function App() {
       setBooks((prev) =>
         prev.map((b) =>
           b.id === readingBook.id
-            ? { ...b, lastChapter: lastChapterIndex, lastScroll, lastPage, progress }
+            ? { ...b, lastChapter: lastChapterIndex, lastScroll, lastPage, progress, lastReadAt: Date.now() }
             : b
         )
       );
@@ -310,9 +316,9 @@ export default function App() {
               </header>
               <section className="reading-overview" aria-label="阅读概览">
                 <div className="reading-feature">
-                  {readingBooks.length > 0 ? <>
-                    <div className="feature-copy"><p className="eyebrow"><Clock size={14} />继续上次的阅读</p><h2>{readingBooks[0].title}</h2><p className="feature-author">{readingBooks[0].author}</p><div className="feature-progress"><span>已读 {readingBooks[0].progress}%</span><div className="progress-track"><span style={{ width: `${readingBooks[0].progress}%` }} /></div></div><button className="text-button" onClick={() => openBook(readingBooks[0])}>继续阅读<ArrowUpRight size={18} /></button></div>
-                    <button className="feature-cover" aria-label={`继续阅读 ${readingBooks[0].title}`} onClick={() => openBook(readingBooks[0])}><BookCover book={readingBooks[0]} style={{ width: "100%", height: "100%", borderRadius: "3px 9px 9px 3px" }} /></button>
+                  {continueReadingBook ? <>
+                    <div className="feature-copy"><p className="eyebrow"><Clock size={14} />继续上次的阅读</p><h2>{continueReadingBook.title}</h2><p className="feature-author">{continueReadingBook.author}</p><div className="feature-progress"><span>已读 {continueReadingBook.progress}%</span><div className="progress-track"><span style={{ width: `${continueReadingBook.progress}%` }} /></div></div><button className="text-button" onClick={() => openBook(continueReadingBook)}>继续阅读<ArrowUpRight size={18} /></button></div>
+                    <button className="feature-cover" aria-label={`继续阅读 ${continueReadingBook.title}`} onClick={() => openBook(continueReadingBook)}><BookCover book={continueReadingBook} style={{ width: "100%", height: "100%", borderRadius: "3px 9px 9px 3px" }} /></button>
                   </> : <>
                     <div className="feature-copy"><p className="eyebrow">A LITTLE TIME, A GOOD BOOK</p><h2>翻开一页，<br />走进另一个世界。</h2><p className="feature-author">{books.length ? "从下方挑一本书，开始今天的阅读。" : "从一本喜欢的书开始，慢慢装满你的书架。"}</p><button className="text-button" onClick={pickFile}>导入你的书<ArrowUpRight size={18} /></button></div>
                     <div className="book-still-life" aria-hidden="true"><div className="decor-book decor-book-back">READ</div><div className="decor-book decor-book-front"><span>THE JOY OF</span><strong>Reading</strong><BookOpen size={32} /><small>ONE PAGE AT A TIME</small></div></div>
