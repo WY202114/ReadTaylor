@@ -152,6 +152,41 @@ async function main() {
   await connect(target); await command('Emulation.setDeviceMetricsOverride',viewport);
   await command('Page.navigate',{url:origin});
   await openBook(); await expectSame(next,'tab close before debounce');
+  // Reading aloud starts from the visible page, highlights each active sentence,
+  // and continues on the next page after the current page has finished.
+  await evaluate(`(() => {
+    window.__readTaylorSpoken = [];
+    window.__readTaylorUtterance = null;
+    class MockUtterance { constructor(text) { this.text = text; } }
+    Object.defineProperty(window, 'SpeechSynthesisUtterance', { configurable: true, value: MockUtterance });
+    Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
+      speak(utterance) { window.__readTaylorSpoken.push(utterance.text); window.__readTaylorUtterance = utterance; },
+      cancel() {}, pause() {}, resume() {}
+    }});
+    window.__finishReadTaylorUtterance = () => {
+      const utterance = window.__readTaylorUtterance;
+      if (!utterance || utterance.__ended) return false;
+      utterance.__ended = true;
+      utterance.onend?.();
+      return true;
+    };
+  })()`);
+  await evaluate(`document.querySelector('[aria-label="打开朗读"]')?.click()`);
+  await waitFor(`document.querySelector('[aria-label="朗读控制"]')?.textContent.includes('朗读本页')`);
+  assert.match(await evaluate(`document.querySelector('[aria-label="朗读控制"]')?.style.width`),/286px/);
+  await evaluate(`document.querySelector('[aria-label="开始朗读"]')?.click()`);
+  const firstSpoken = await waitFor(`window.__readTaylorSpoken?.[0]`);
+  assert.ok(firstSpoken.length > 0,`speech did not start from the current page`);
+  await waitFor(`document.querySelector('iframe:not([aria-hidden])')?.contentDocument?.defaultView?.CSS?.highlights?.has('readtaylor-speech-current')`);
+  const speechStartPage = (await evaluate(snapshot)).page;
+  for(let i=0;i<120;i++) {
+    if((await evaluate(snapshot))?.page > speechStartPage) break;
+    await evaluate(`window.__finishReadTaylorUtterance()`);
+    await delay(30);
+  }
+  await waitFor(`(${snapshot})?.page === ${speechStartPage + 1}`);
+  await waitFor(`window.__readTaylorSpoken.length > 1 && document.querySelector('iframe:not([aria-hidden])')?.contentDocument?.defaultView?.CSS?.highlights?.has('readtaylor-speech-current')`);
+  console.log(`speech starts on page ${speechStartPage}, highlights the active sentence, and advances to page ${speechStartPage + 1}`);
   const screen=await command('Page.captureScreenshot',{format:'png'});
   await fs.writeFile(path.join(process.env.TEMP || process.cwd(),`position-regression-${width}.png`),Buffer.from(screen.data,'base64'));
 }
