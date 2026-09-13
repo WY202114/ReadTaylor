@@ -242,21 +242,21 @@ export default function App() {
 
   const openBook = (book: Book) => setReadingBook({ ...book, lastReadAt: Date.now() });
 
-  const persistReadingPosition = useCallback((lastChapterIndex: number, lastScroll: number, lastPage?: Book["lastPage"]) => {
+  const persistReadingPosition = useCallback((lastChapterIndex: number, lastScroll: number, lastPage: Book["lastPage"] | undefined, overallProgress: number) => {
     if (!readingBook) return;
     saveReadingPosition(
       readingBook.id,
       lastChapterIndex,
       lastScroll,
       readingBook.chapters.length,
-      lastPage
+      lastPage,
+      overallProgress
     );
   }, [readingBook]);
 
-  const closeReader = (lastChapterIndex: number, lastScroll: number, lastPage?: Book["lastPage"]) => {
+  const closeReader = (lastChapterIndex: number, lastScroll: number, lastPage: Book["lastPage"] | undefined, overallProgress: number) => {
     if (readingBook) {
-      const total = readingBook.chapters.length;
-      const progress = Math.round(((lastChapterIndex + 1) / total) * 100);
+      const progress = Math.round(Math.min(1, Math.max(0, overallProgress)) * 1000) / 10;
       setBooks((prev) =>
         prev.map((b) =>
           b.id === readingBook.id

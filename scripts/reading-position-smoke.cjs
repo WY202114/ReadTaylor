@@ -75,6 +75,16 @@ async function expectSame(expected, label) {
   assert.equal(actual.x, expected.x, `${label}: horizontal position changed`);
   console.log(`${label}: ${actual.page} / ${actual.total}, content and scroll position match`);
 }
+async function expectShelfProgress(page, total, label) {
+  const expected = Math.round(((page - 1) / (total - 1)) * 1000) / 10;
+  const actual = await waitFor(`(() => {
+    const text = document.querySelector('.feature-progress > span')?.textContent || '';
+    const match = text.match(/([0-9.]+)%/);
+    return match ? Number(match[1]) : null;
+  })()`);
+  assert.equal(actual, expected, `${label}: expected ${expected}%, received ${actual}%`);
+  console.log(`${label}: reader and shelf both show ${actual}%`);
+}
 async function main() {
   const zip = new JSZip();
   zip.file('mimetype','application/epub+zip');
@@ -119,6 +129,7 @@ async function main() {
     await openBook(); await expectSame(expected,`slow reload ${i+1}`);
   }
   await evaluate(`document.querySelector('[aria-label="返回书架"]').click()`);
+  await expectShelfProgress(expected.page, expected.total, 'shelf progress matches page progress');
   await openBook(); await expectSame(expected,'shelf reopen');
   // Removing the new exact-page field exercises existing users' percentage bookmarks.
   await evaluate(`document.querySelector('[aria-label="返回书架"]').click()`);
@@ -142,6 +153,6 @@ async function main() {
   await command('Page.navigate',{url:origin});
   await openBook(); await expectSame(next,'tab close before debounce');
   const screen=await command('Page.captureScreenshot',{format:'png'});
-  await fs.writeFile(path.resolve(`../position-regression-${width}.png`),Buffer.from(screen.data,'base64'));
+  await fs.writeFile(path.join(process.env.TEMP || process.cwd(),`position-regression-${width}.png`),Buffer.from(screen.data,'base64'));
 }
 main().catch(error=>{console.error(error);process.exitCode=1}).finally(()=>socket?.close());

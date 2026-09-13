@@ -72,6 +72,17 @@ async function returnToShelf() {
   await waitFor("!!document.querySelector('.reading-feature')");
 }
 
+async function readNextChapter() {
+  await waitFor(`(() => {
+    const button = [...document.querySelectorAll('button')]
+      .find((candidate) => candidate.textContent?.includes('下一章') && !candidate.disabled);
+    if (!button) return false;
+    button.click();
+    return true;
+  })()`);
+  await waitFor("document.body.innerText.includes('2 / 2')");
+}
+
 async function main() {
   const targets = await fetch(`http://127.0.0.1:${port}/json`).then((response) => response.json());
   await connect(targets.find((target) => target.type === "page" && target.url.startsWith(origin)));
@@ -109,6 +120,7 @@ async function main() {
   await expectContinueTitle("Legacy first book", "legacy data keeps the existing order");
 
   await openShelfBook("Recently opened book");
+  await readNextChapter();
   await returnToShelf();
   await expectContinueTitle("Recently opened book", "opening another book updates continue reading");
 
@@ -116,6 +128,7 @@ async function main() {
   await expectContinueTitle("Recently opened book", "recent book survives reload");
 
   await openShelfBook("Legacy first book");
+  await readNextChapter();
   await returnToShelf();
   await expectContinueTitle("Legacy first book", "a newer reading session replaces the previous one");
 }

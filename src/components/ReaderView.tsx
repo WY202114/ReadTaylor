@@ -49,8 +49,8 @@ import {
 
 interface ReaderViewProps {
   book: Book;
-  onBack: (lastChapterIndex: number, lastScroll: number, lastPage?: ReadingPage) => void;
-  onPositionChange: (lastChapterIndex: number, lastScroll: number, lastPage?: ReadingPage) => void;
+  onBack: (lastChapterIndex: number, lastScroll: number, lastPage: ReadingPage | undefined, overallProgress: number) => void;
+  onPositionChange: (lastChapterIndex: number, lastScroll: number, lastPage: ReadingPage | undefined, overallProgress: number) => void;
   isDark: boolean;
   onToggleDark: () => void;
 }
@@ -428,11 +428,13 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     chapterIndex: initialChapterIndex,
     progress: initialProgress,
     page: book.lastPage,
+    overallProgress: clampProgress(book.progress / 100),
   });
   const persistedReadingPositionRef = useRef({
     chapterIndex: initialChapterIndex,
     progress: initialProgress,
     page: book.lastPage,
+    overallProgress: clampProgress(book.progress / 100),
   });
   const positionSaveTimerRef = useRef<number | undefined>(undefined);
   const onPositionChangeRef = useRef(onPositionChange);
@@ -937,64 +939,6 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
   }, [isFidelity, chapterPageIndex]);
 
   const currentChapterPageCount = chapterPageCounts[chapterIndex] || 1;
-  paginationPositionRef.current = {
-    chapterIndex,
-    pageIndex: chapterPageIndex,
-    pageCount: currentChapterPageCount,
-  };
-  // Only a fully restored, visible chapter can replace the durable bookmark.
-  if (!isFidelity || (!rendering && srcdocTarget === renderTarget
-    && pendingPageRef.current.chapterIndex !== chapterIndex)) latestReadingPositionRef.current = {
-    chapterIndex,
-    progress: isFidelity
-      ? currentChapterPageCount > 1
-        ? chapterPageIndex / (currentChapterPageCount - 1)
-        : 0
-      : scrollProgress,
-    page: isFidelity ? {
-      index: chapterPageIndex,
-      count: currentChapterPageCount,
-      width: iframeRef.current?.clientWidth || 0,
-      height: iframeRef.current?.clientHeight || 0,
-      fontSize,
-    } : undefined,
-  };
-
-  const flushReadingPosition = () => {
-    window.clearTimeout(positionSaveTimerRef.current);
-    const current = latestReadingPositionRef.current;
-    const persisted = persistedReadingPositionRef.current;
-    if (
-      current.chapterIndex === persisted.chapterIndex
-      && Math.abs(current.progress - persisted.progress) < 0.0001
-      && JSON.stringify(current.page) === JSON.stringify(persisted.page)
-    ) return;
-    persistedReadingPositionRef.current = current;
-    onPositionChangeRef.current(current.chapterIndex, current.progress, current.page);
-  };
-
-  // 翻页或滚动后自动保存；短暂延迟可以避免连续滚动时频繁写入本地存储。
-  useEffect(() => {
-    if (isFidelity && rendering) return;
-    window.clearTimeout(positionSaveTimerRef.current);
-    positionSaveTimerRef.current = window.setTimeout(flushReadingPosition, 300);
-    return () => window.clearTimeout(positionSaveTimerRef.current);
-  }, [chapterIndex, chapterPageIndex, currentChapterPageCount, scrollProgress, isFidelity, rendering]);
-
-  // pagehide 兼容关闭标签页、刷新、手机浏览器切后台等离开方式。
-  useEffect(() => {
-    const handlePageHide = () => flushReadingPosition();
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") flushReadingPosition();
-    };
-    window.addEventListener("pagehide", handlePageHide);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      flushReadingPosition();
-      window.removeEventListener("pagehide", handlePageHide);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
   const pagesBeforeAreReady = chapterPageCounts
     .slice(0, chapterIndex)
     .every((count) => count != null);
@@ -1021,6 +965,66 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
   const overallProgress = isFidelity
     ? fidelityProgress
     : Math.min(1, (chapterIndex + scrollProgress) / Math.max(1, book.chapters.length));
+  paginationPositionRef.current = {
+    chapterIndex,
+    pageIndex: chapterPageIndex,
+    pageCount: currentChapterPageCount,
+  };
+  // Only a fully restored, visible chapter can replace the durable bookmark.
+  if (!isFidelity || (!rendering && srcdocTarget === renderTarget
+    && pendingPageRef.current.chapterIndex !== chapterIndex)) latestReadingPositionRef.current = {
+    chapterIndex,
+    progress: isFidelity
+      ? currentChapterPageCount > 1
+        ? chapterPageIndex / (currentChapterPageCount - 1)
+        : 0
+      : scrollProgress,
+    page: isFidelity ? {
+      index: chapterPageIndex,
+      count: currentChapterPageCount,
+      width: iframeRef.current?.clientWidth || 0,
+      height: iframeRef.current?.clientHeight || 0,
+      fontSize,
+    } : undefined,
+    overallProgress,
+  };
+
+  const flushReadingPosition = () => {
+    window.clearTimeout(positionSaveTimerRef.current);
+    const current = latestReadingPositionRef.current;
+    const persisted = persistedReadingPositionRef.current;
+    if (
+      current.chapterIndex === persisted.chapterIndex
+      && Math.abs(current.progress - persisted.progress) < 0.0001
+      && JSON.stringify(current.page) === JSON.stringify(persisted.page)
+      && Math.abs(current.overallProgress - persisted.overallProgress) < 0.0001
+    ) return;
+    persistedReadingPositionRef.current = current;
+    onPositionChangeRef.current(current.chapterIndex, current.progress, current.page, current.overallProgress);
+  };
+
+  // 翻页或滚动后自动保存；短暂延迟可以避免连续滚动时频繁写入本地存储。
+  useEffect(() => {
+    if (isFidelity && rendering) return;
+    window.clearTimeout(positionSaveTimerRef.current);
+    positionSaveTimerRef.current = window.setTimeout(flushReadingPosition, 300);
+    return () => window.clearTimeout(positionSaveTimerRef.current);
+  }, [chapterIndex, chapterPageIndex, currentChapterPageCount, scrollProgress, isFidelity, rendering, overallProgress]);
+
+  // pagehide 兼容关闭标签页、刷新、手机浏览器切后台等离开方式。
+  useEffect(() => {
+    const handlePageHide = () => flushReadingPosition();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flushReadingPosition();
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      flushReadingPosition();
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
   const currentPageNotes = notes.filter((note) => (
     note.chapterId === chapter.id
     && (!isFidelity || note.pageIndex == null || note.pageIndex === chapterPageIndex)
@@ -1462,7 +1466,8 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
             onBack(
               latestReadingPositionRef.current.chapterIndex,
               latestReadingPositionRef.current.progress,
-              latestReadingPositionRef.current.page
+              latestReadingPositionRef.current.page,
+              latestReadingPositionRef.current.overallProgress
             );
           }}
           aria-label="返回书架"

@@ -462,18 +462,22 @@ export function saveReadingPosition(
   lastChapter: number,
   lastScroll: number,
   chapterCount: number,
-  lastPage?: ReadingPage
+  lastPage?: ReadingPage,
+  overallProgress?: number
 ): boolean {
   try {
     const safeChapterCount = Math.max(1, chapterCount);
     const safeChapter = Math.min(Math.max(0, lastChapter), safeChapterCount - 1);
     const safeScroll = Math.min(1, Math.max(0, lastScroll));
+    const safeOverallProgress = overallProgress == null
+      ? (safeChapter + 1) / safeChapterCount
+      : Math.min(1, Math.max(0, overallProgress));
     const positions = loadReadingPositions();
     positions[bookId] = {
       lastChapter: safeChapter,
       lastScroll: safeScroll,
       lastPage,
-      progress: Math.round(((safeChapter + 1) / safeChapterCount) * 100),
+      progress: Math.round(safeOverallProgress * 1000) / 10,
       lastReadAt: Date.now(),
     };
     localStorage.setItem(READING_POSITION_STORAGE_KEY, JSON.stringify(positions));
