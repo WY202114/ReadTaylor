@@ -447,6 +447,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
   const [speechRate, setSpeechRate] = useState(loadSpeechRate);
   const [speechStatus, setSpeechStatus] = useState<"idle" | "playing" | "paused">("idle");
   const [speechMessage, setSpeechMessage] = useState("");
+  const [speechHasResumePoint, setSpeechHasResumePoint] = useState(false);
   const [translationLanguage, setTranslationLanguage] = useState(loadTranslationLanguage);
   const [translationVisible, setTranslationVisible] = useState(false);
   const [translationLoading, setTranslationLoading] = useState(false);
@@ -507,6 +508,8 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
   const speechRateRef = useRef(speechRate);
   const speechHighlightDocumentRef = useRef<Document | null>(null);
   const speechAutoAdvanceRef = useRef(false);
+  const speechCharacterOffsetRef = useRef(0);
+  const speechStartTimerRef = useRef<number | undefined>(undefined);
   const mobileSelectionTimerRef = useRef<number | undefined>(undefined);
   const translationRequestRef = useRef<AbortController | null>(null);
   const translationSourceRef = useRef<VisibleTranslationSource | null>(null);
@@ -1283,13 +1286,21 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     }
   };
 
-  const stopSpeech = (message = "") => {
+  const stopSpeech = (message = "", preservePosition = false) => {
+    window.clearTimeout(speechStartTimerRef.current);
     speechSessionRef.current += 1;
     if (speechSupported) window.speechSynthesis.cancel();
-    speechQueueRef.current = [];
-    speechIndexRef.current = 0;
+    const canResume = preservePosition
+      && speechQueueRef.current.length > 0
+      && speechIndexRef.current < speechQueueRef.current.length;
+    if (!canResume) {
+      speechQueueRef.current = [];
+      speechIndexRef.current = 0;
+      speechCharacterOffsetRef.current = 0;
+    }
     speechAutoAdvanceRef.current = false;
     clearSpeechHighlight();
+    setSpeechHasResumePoint(canResume);
     setSpeechStatus("idle");
     setSpeechMessage(message);
   };
@@ -1299,6 +1310,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
       const hasNextPage = chapterPageIndex + 1 < currentChapterPageCount
         || chapterIndex + 1 < book.chapters.length;
       if (!hasNextPage) return false;
+      setSpeechHasResumePoint(false);
       speechAutoAdvanceRef.current = true;
       setSpeechMessage("本页读完，正在翻到下一页…");
       goToNextPage();
@@ -1307,12 +1319,14 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
 
     const content = contentRef.current;
     if (content && content.scrollTop + content.clientHeight < content.scrollHeight - 4) {
+      setSpeechHasResumePoint(false);
       speechAutoAdvanceRef.current = true;
       setSpeechMessage("本页读完，正在继续下一页…");
       content.scrollTo({ top: Math.min(content.scrollHeight, content.scrollTop + content.clientHeight * 0.88) });
       return true;
     }
     if (chapterIndex + 1 < book.chapters.length) {
+      setSpeechHasResumePoint(false);
       speechAutoAdvanceRef.current = true;
       setSpeechMessage("本页读完，正在继续下一章…");
       setChapterIndex((index) => Math.min(book.chapters.length - 1, index + 1));
@@ -1327,28 +1341,69 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     if (!text) {
       speechQueueRef.current = [];
       speechIndexRef.current = 0;
+      speechCharacterOffsetRef.current = 0;
       clearSpeechHighlight();
       if (advanceToNextSpeechPage()) return;
+      setSpeechHasResumePoint(false);
       setSpeechStatus("idle");
       setSpeechMessage("已读到全书末尾");
       return;
     }
 
+    const requestedOffset = Math.min(speechCharacterOffsetRef.current, text.length);
+    const remainingWithWhitespace = text.slice(requestedOffset);
+    const leadingWhitespace = remainingWithWhitespace.length - remainingWithWhitespace.trimStart().length;
+    const baseOffset = requestedOffset + leadingWhitespace;
+    const remaining = text.slice(baseOffset);
+    if (!remaining) {
+      speechCharacterOffsetRef.current = 0;
+      speechIndexRef.current += 1;
+      speechStartTimerRef.current = window.setTimeout(() => speakNextChunk(session), 120);
+      return;
+    }
+
     highlightSpeechText(text);
-    const utterance = new SpeechSynthesisUtterance(text);
+    // A short punctuation lead-in plus a small delay prevents several system
+    // voices from clipping the first syllables immediately after speak/cancel.
+    const leadIn = /[\u3400-\u9fff]/.test(remaining) ? "，" : ", ";
+    const utterance = new SpeechSynthesisUtterance(`${leadIn}${remaining}`);
     utterance.rate = speechRateRef.current;
-    utterance.lang = /[\u3400-\u9fff]/.test(text) ? "zh-CN" : "en-US";
+    utterance.lang = /[\u3400-\u9fff]/.test(remaining) ? "zh-CN" : "en-US";
+    utterance.onboundary = (event) => {
+      if (session !== speechSessionRef.current) return;
+      speechCharacterOffsetRef.current = Math.min(
+        text.length,
+        baseOffset + Math.max(0, event.charIndex - leadIn.length)
+      );
+    };
     utterance.onend = () => {
       if (session !== speechSessionRef.current) return;
       clearSpeechHighlight();
+      speechCharacterOffsetRef.current = 0;
       speechIndexRef.current += 1;
-      speakNextChunk(session);
+      speechStartTimerRef.current = window.setTimeout(() => speakNextChunk(session), 120);
     };
     utterance.onerror = (event) => {
       if (session !== speechSessionRef.current || event.error === "canceled" || event.error === "interrupted") return;
       stopSpeech("朗读暂时不可用，请稍后重试");
     };
     window.speechSynthesis.speak(utterance);
+  };
+
+  const resumeSpeech = () => {
+    if (!speechSupported || !speechQueueRef.current.length) {
+      startSpeech(false);
+      return;
+    }
+    window.clearTimeout(speechStartTimerRef.current);
+    speechSessionRef.current += 1;
+    window.speechSynthesis.cancel();
+    setSpeechHasResumePoint(false);
+    setSpeechStatus("playing");
+    setSpeechMessage("从暂停位置继续朗读");
+    setShowSpeechControls(false);
+    const session = speechSessionRef.current;
+    speechStartTimerRef.current = window.setTimeout(() => speakNextChunk(session), 160);
   };
 
   const startSpeech = (continuedFromPreviousPage = false) => {
@@ -1365,25 +1420,29 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
 
     speechSessionRef.current += 1;
     window.speechSynthesis.cancel();
+    window.clearTimeout(speechStartTimerRef.current);
     clearSpeechHighlight();
     speechQueueRef.current = chunks;
     speechIndexRef.current = 0;
+    speechCharacterOffsetRef.current = 0;
+    setSpeechHasResumePoint(false);
     setSpeechMessage(continuedFromPreviousPage ? "已自动翻页，继续朗读" : "从当前页开始朗读");
     setSpeechStatus("playing");
-    speakNextChunk(speechSessionRef.current);
+    const session = speechSessionRef.current;
+    speechStartTimerRef.current = window.setTimeout(() => speakNextChunk(session), 160);
     setShowSpeechControls(false);
   };
 
   const toggleSpeech = () => {
     if (speechStatus === "playing") {
-      window.speechSynthesis.pause();
+      window.clearTimeout(speechStartTimerRef.current);
+      speechSessionRef.current += 1;
+      window.speechSynthesis.cancel();
+      setSpeechHasResumePoint(true);
       setSpeechStatus("paused");
-      setSpeechMessage("已暂停");
-    } else if (speechStatus === "paused") {
-      window.speechSynthesis.resume();
-      setSpeechStatus("playing");
-      setSpeechMessage("继续朗读");
-      setShowSpeechControls(false);
+      setSpeechMessage("已暂停，将从当前句继续");
+    } else if (speechStatus === "paused" || speechHasResumePoint) {
+      resumeSpeech();
     } else {
       startSpeech(false);
     }
@@ -1406,8 +1465,11 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     if (speechAutoAdvanceRef.current) return;
     speechSessionRef.current += 1;
     if (speechSupported) window.speechSynthesis.cancel();
+    window.clearTimeout(speechStartTimerRef.current);
     speechQueueRef.current = [];
     speechIndexRef.current = 0;
+    speechCharacterOffsetRef.current = 0;
+    setSpeechHasResumePoint(false);
     clearSpeechHighlight();
     setSpeechStatus("idle");
     setSpeechMessage("");
@@ -1416,6 +1478,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
   useEffect(() => () => {
     speechSessionRef.current += 1;
     if (speechSupported) window.speechSynthesis.cancel();
+    window.clearTimeout(speechStartTimerRef.current);
     clearSpeechHighlight();
   }, []);
 
@@ -2010,15 +2073,15 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
             <div className="mt-3 flex items-center gap-2">
               <button
                 onClick={toggleSpeech}
-                aria-label={speechStatus === "playing" ? "暂停朗读" : speechStatus === "paused" ? "继续朗读" : "开始朗读"}
+                aria-label={speechStatus === "playing" ? "暂停朗读" : speechStatus === "paused" || speechHasResumePoint ? "继续朗读" : "开始朗读"}
                 className="h-9 flex-1 flex items-center justify-center gap-2 rounded-xl"
                 style={{ background: "var(--accent)", color: "var(--accent-foreground)", fontFamily: "Inter, sans-serif", fontSize: "12px" }}
               >
                 {speechStatus === "playing" ? <Pause size={16} /> : <Play size={16} />}
-                {speechStatus === "playing" ? "暂停" : speechStatus === "paused" ? "继续" : "开始朗读"}
+                {speechStatus === "playing" ? "暂停" : speechStatus === "paused" || speechHasResumePoint ? "继续" : "开始朗读"}
               </button>
               <button
-                onClick={() => stopSpeech("已停止")}
+                onClick={() => stopSpeech("已停止，可从此处继续", true)}
                 disabled={speechStatus === "idle"}
                 aria-label="停止朗读"
                 className="w-9 h-9 shrink-0 flex items-center justify-center rounded-xl transition-opacity disabled:opacity-30"

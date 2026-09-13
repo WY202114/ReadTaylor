@@ -156,12 +156,18 @@ async function main() {
   // and continues on the next page after the current page has finished.
   await evaluate(`(() => {
     window.__readTaylorSpoken = [];
+    window.__readTaylorSpeakDelays = [];
+    window.__readTaylorLastCancel = 0;
     window.__readTaylorUtterance = null;
     class MockUtterance { constructor(text) { this.text = text; } }
     Object.defineProperty(window, 'SpeechSynthesisUtterance', { configurable: true, value: MockUtterance });
     Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
-      speak(utterance) { window.__readTaylorSpoken.push(utterance.text); window.__readTaylorUtterance = utterance; },
-      cancel() {}, pause() {}, resume() {}
+      speak(utterance) {
+        window.__readTaylorSpoken.push(utterance.text);
+        window.__readTaylorSpeakDelays.push(Date.now() - window.__readTaylorLastCancel);
+        window.__readTaylorUtterance = utterance;
+      },
+      cancel() { window.__readTaylorLastCancel = Date.now(); }, pause() {}, resume() {}
     }});
     window.__finishReadTaylorUtterance = () => {
       const utterance = window.__readTaylorUtterance;
@@ -177,16 +183,44 @@ async function main() {
   await evaluate(`document.querySelector('[aria-label="开始朗读"]')?.click()`);
   const firstSpoken = await waitFor(`window.__readTaylorSpoken?.[0]`);
   assert.ok(firstSpoken.length > 0,`speech did not start from the current page`);
+  assert.match(firstSpoken,/^[，,]/,'speech should use a punctuation lead-in');
+  assert.ok(await evaluate(`window.__readTaylorSpeakDelays[0] >= 120`),'speech should wait briefly after cancel before speaking');
   await waitFor(`document.querySelector('iframe:not([aria-hidden])')?.contentDocument?.defaultView?.CSS?.highlights?.has('readtaylor-speech-current')`);
   const speechStartPage = (await evaluate(snapshot)).page;
+
+  // Pause cancels the platform utterance and resumes the same sentence from
+  // its last word boundary, even if the platform would otherwise fire onend.
+  await evaluate(`window.__readTaylorUtterance.onboundary?.({charIndex: 28})`);
+  await evaluate(`document.querySelector('[aria-label="打开朗读控制"]')?.click()`);
+  await evaluate(`document.querySelector('[aria-label="暂停朗读"]')?.click()`);
+  await waitFor(`document.querySelector('[aria-label="继续朗读"]')?.textContent.includes('继续')`);
+  const beforePauseCount = await evaluate(`window.__readTaylorSpoken.length`);
+  await evaluate(`document.querySelector('[aria-label="继续朗读"]')?.click()`);
+  const resumedAfterPause = await waitFor(`window.__readTaylorSpoken.length > ${beforePauseCount} && window.__readTaylorSpoken.at(-1)`);
+  const cleanSpeech = (value) => value.replace(/^[，,]\s*/, '');
+  assert.notEqual(cleanSpeech(resumedAfterPause),cleanSpeech(firstSpoken),'pause should not restart the sentence');
+  assert.ok(cleanSpeech(firstSpoken).endsWith(cleanSpeech(resumedAfterPause)),'pause should resume inside the same sentence');
+
+  // Stop keeps the same cursor so the next click continues instead of
+  // rebuilding the queue from the beginning of the visible page.
+  await evaluate(`window.__readTaylorUtterance.onboundary?.({charIndex: 18})`);
+  await evaluate(`document.querySelector('[aria-label="打开朗读控制"]')?.click()`);
+  await evaluate(`document.querySelector('[aria-label="停止朗读"]')?.click()`);
+  await waitFor(`document.querySelector('[aria-label="继续朗读"]')?.textContent.includes('继续')`);
+  const beforeStopCount = await evaluate(`window.__readTaylorSpoken.length`);
+  await evaluate(`document.querySelector('[aria-label="继续朗读"]')?.click()`);
+  const resumedAfterStop = await waitFor(`window.__readTaylorSpoken.length > ${beforeStopCount} && window.__readTaylorSpoken.at(-1)`);
+  assert.notEqual(cleanSpeech(resumedAfterStop),cleanSpeech(resumedAfterPause),'stop should not restart the current sentence');
+  assert.ok(cleanSpeech(resumedAfterPause).endsWith(cleanSpeech(resumedAfterStop)),'stop should preserve the sentence cursor');
+
   for(let i=0;i<120;i++) {
     if((await evaluate(snapshot))?.page > speechStartPage) break;
     await evaluate(`window.__finishReadTaylorUtterance()`);
     await delay(30);
   }
   await waitFor(`(${snapshot})?.page === ${speechStartPage + 1}`);
-  await waitFor(`window.__readTaylorSpoken.length > 1 && document.querySelector('iframe:not([aria-hidden])')?.contentDocument?.defaultView?.CSS?.highlights?.has('readtaylor-speech-current')`);
-  console.log(`speech starts on page ${speechStartPage}, highlights the active sentence, and advances to page ${speechStartPage + 1}`);
+  await waitFor(`document.querySelector('iframe:not([aria-hidden])')?.contentDocument?.defaultView?.CSS?.highlights?.has('readtaylor-speech-current')`);
+  console.log(`speech keeps sentence position through pause/stop, highlights it, and advances from page ${speechStartPage} to ${speechStartPage + 1}`);
   const screen=await command('Page.captureScreenshot',{format:'png'});
   await fs.writeFile(path.join(process.env.TEMP || process.cwd(),`position-regression-${width}.png`),Buffer.from(screen.data,'base64'));
 }
