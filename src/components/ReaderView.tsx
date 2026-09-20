@@ -25,6 +25,7 @@ import {
   ChevronsRight,
   ChevronDown,
   ChevronUp,
+  ScanLine,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import type { Book, ReadingPage } from "../lib/books";
@@ -94,6 +95,15 @@ type VisibleTranslationSource = {
   text: string;
   pageKey: string;
 };
+
+type LineFocusRect = {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+};
+
+const LINE_FOCUS_INTERVAL_MS = 2500;
 
 const NOTE_COLORS: Array<{ id: NoteColor; label: string; hex: string; fill: string }> = [
   { id: "yellow", label: "黄色", hex: "#C58B20", fill: "rgba(236, 190, 76, 0.42)" },
@@ -376,6 +386,63 @@ function intersectsViewport(rect: DOMRect, viewport: DOMRect): boolean {
     && rect.top < viewport.bottom;
 }
 
+function visibleLineRectsFromRoot(doc: Document, root: Node, viewport: DOMRect): LineFocusRect[] {
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!node.textContent?.trim() || !parent) return NodeFilter.FILTER_REJECT;
+      if (parent.closest("script, style, noscript, button, [aria-hidden='true']")) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const fragments: Array<{ top: number; bottom: number; left: number; right: number }> = [];
+  let node = walker.nextNode() as Text | null;
+
+  while (node) {
+    const range = doc.createRange();
+    range.selectNodeContents(node);
+    Array.from(range.getClientRects()).forEach((rect) => {
+      if (!intersectsViewport(rect, viewport)) return;
+      const top = Math.max(viewport.top, rect.top);
+      const bottom = Math.min(viewport.bottom, rect.bottom);
+      const left = Math.max(viewport.left, rect.left);
+      const right = Math.min(viewport.right, rect.right);
+      if (right - left < 2 || bottom - top < 2) return;
+      fragments.push({ top, bottom, left, right });
+    });
+    node = walker.nextNode() as Text | null;
+  }
+
+  fragments.sort((a, b) => a.top - b.top || a.left - b.left);
+  const lines: Array<{ top: number; bottom: number; left: number; right: number }> = [];
+  fragments.forEach((fragment) => {
+    const center = (fragment.top + fragment.bottom) / 2;
+    const line = lines.find((candidate) => {
+      const candidateCenter = (candidate.top + candidate.bottom) / 2;
+      return Math.abs(center - candidateCenter) <= Math.max(2, Math.min(fragment.bottom - fragment.top, candidate.bottom - candidate.top) * 0.35);
+    });
+    if (line) {
+      line.top = Math.min(line.top, fragment.top);
+      line.bottom = Math.max(line.bottom, fragment.bottom);
+      line.left = Math.min(line.left, fragment.left);
+      line.right = Math.max(line.right, fragment.right);
+    } else {
+      lines.push({ ...fragment });
+    }
+  });
+
+  return lines.slice(0, 300).map((line) => {
+    const top = Math.max(0, line.top - 2);
+    const left = Math.max(0, line.left - 5);
+    return {
+      top,
+      left,
+      width: Math.min(viewport.width - left, line.right - line.left + 10),
+      height: Math.min(viewport.height - top, line.bottom - line.top + 4),
+    };
+  });
+}
+
 function visibleTextFromRoot(doc: Document, root: Node, viewport: DOMRect, maxLength = 6000): string {
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -454,6 +521,11 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
   const [translationText, setTranslationText] = useState("");
   const [translationError, setTranslationError] = useState("");
   const [translationDetectedLanguage, setTranslationDetectedLanguage] = useState("");
+  const [lineFocusEnabled, setLineFocusEnabled] = useState(false);
+  const [lineFocusManuallyPaused, setLineFocusManuallyPaused] = useState(false);
+  const [lineFocusPageVisible, setLineFocusPageVisible] = useState(() => document.visibilityState !== "hidden");
+  const [lineFocusIndex, setLineFocusIndex] = useState(0);
+  const [lineFocusLines, setLineFocusLines] = useState<LineFocusRect[]>([]);
   const [desktopWorkspace, setDesktopWorkspace] = useState(() => window.matchMedia("(min-width: 1280px)").matches);
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
@@ -525,6 +597,12 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     update();
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => setLineFocusPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, []);
 
   // 原版模式：渲染当前章节的原 HTML
@@ -1509,6 +1587,92 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
     }
   };
 
+  const lineFocusTemporarilyPaused = !lineFocusPageVisible
+    || Boolean(selectionTarget)
+    || Boolean(noteComposer)
+    || translationVisible
+    || translationLoading
+    || speechStatus === "playing";
+  const lineFocusPaused = lineFocusManuallyPaused || lineFocusTemporarilyPaused;
+
+  useEffect(() => {
+    if (!lineFocusEnabled || !isFidelity || fixedLayout || rendering || srcdocTarget !== renderTarget) {
+      setLineFocusLines([]);
+      return;
+    }
+    const frame = iframeRef.current;
+    const doc = frame?.contentDocument;
+    if (!frame || !doc?.body) return;
+    const measure = () => {
+      const viewport = new DOMRect(0, 0, frame.clientWidth, frame.clientHeight);
+      setLineFocusLines(visibleLineRectsFromRoot(doc, doc.body, viewport));
+      setLineFocusIndex(0);
+    };
+    let cancelled = false;
+    let innerAnimationFrame = 0;
+    const animationFrame = window.requestAnimationFrame(() => {
+      innerAnimationFrame = window.requestAnimationFrame(() => {
+        if (!cancelled) measure();
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(animationFrame);
+      window.cancelAnimationFrame(innerAnimationFrame);
+    };
+  }, [lineFocusEnabled, isFidelity, fixedLayout, rendering, srcdocTarget, renderTarget, chapterIndex, chapterPageIndex, fontSize]);
+
+  useEffect(() => {
+    if (!lineFocusEnabled || lineFocusPaused || lineFocusLines.length === 0) return;
+    const timer = window.setTimeout(() => {
+      if (lineFocusIndex + 1 < lineFocusLines.length) {
+        setLineFocusIndex((index) => index + 1);
+        return;
+      }
+      if (chapterPageIndex + 1 < currentChapterPageCount) {
+        setChapterPageIndex((page) => page + 1);
+      } else if (chapterIndex + 1 < book.chapters.length) {
+        pendingPageRef.current = { chapterIndex: chapterIndex + 1, mode: "first" };
+        setChapterPageIndex(0);
+        setChapterIndex((index) => index + 1);
+      } else {
+        setLineFocusManuallyPaused(true);
+      }
+    }, LINE_FOCUS_INTERVAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [
+    lineFocusEnabled,
+    lineFocusPaused,
+    lineFocusIndex,
+    lineFocusLines.length,
+    chapterPageIndex,
+    currentChapterPageCount,
+    chapterIndex,
+    book.chapters.length,
+  ]);
+
+  useEffect(() => {
+    if (!lineFocusEnabled || lineFocusLines.length === 0) return;
+    const doc = iframeRef.current?.contentDocument;
+    const win = iframeRef.current?.contentWindow;
+    if (!doc || !win) return;
+    const handleClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || win.getSelection()?.toString().trim()) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("a, button, mark[data-readtaylor-note-highlight]")) return;
+      const exactIndex = lineFocusLines.findIndex((line) => (
+        event.clientY >= line.top - 4
+        && event.clientY <= line.top + line.height + 4
+      ));
+      if (exactIndex >= 0) {
+        setLineFocusIndex(exactIndex);
+        setLineFocusManuallyPaused(false);
+      }
+    };
+    doc.addEventListener("click", handleClick);
+    return () => doc.removeEventListener("click", handleClick);
+  }, [lineFocusEnabled, lineFocusLines]);
+
   useEffect(() => {
     if (!speechAutoAdvanceRef.current) return;
     if (isFidelity && (rendering || srcdocTarget !== renderTarget)) return;
@@ -1668,6 +1832,22 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
         </button>
 
         <div className="flex shrink-0 items-center gap-2">
+          {isFidelity && !fixedLayout && (
+            <button
+              onClick={() => {
+                setLineFocusEnabled((enabled) => !enabled);
+                setLineFocusManuallyPaused(false);
+                setLineFocusIndex(0);
+              }}
+              aria-label={lineFocusEnabled ? "关闭逐行专注" : "开启逐行专注"}
+              aria-pressed={lineFocusEnabled}
+              title={lineFocusEnabled ? "关闭逐行专注" : "开启逐行专注"}
+              className="w-10 h-10 flex items-center justify-center rounded-full"
+              style={{ background: "var(--secondary)" }}
+            >
+              <ScanLine size={18} style={{ color: lineFocusEnabled ? "var(--accent)" : "var(--muted-foreground)" }} />
+            </button>
+          )}
           <button
             onClick={toggleCurrentPageTranslation}
             aria-label={desktopWorkspace ? "在学习工作台中翻译当前页" : translationVisible ? "关闭译文，查看原文" : "翻译当前页"}
@@ -1766,6 +1946,57 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
                 style={{ width: "100%", height: "100%", border: "none", background: "#faf6ef", display: "block" }}
               />
             ) : null}
+            {lineFocusEnabled && lineFocusLines[lineFocusIndex] && (
+              <div
+                aria-hidden="true"
+                className="absolute pointer-events-none"
+                style={{
+                  zIndex: 4,
+                  top: `${lineFocusLines[lineFocusIndex].top}px`,
+                  left: `${lineFocusLines[lineFocusIndex].left}px`,
+                  width: `${lineFocusLines[lineFocusIndex].width}px`,
+                  height: `${lineFocusLines[lineFocusIndex].height}px`,
+                  borderLeft: "2px solid rgba(177, 108, 62, 0.82)",
+                  borderRadius: "4px",
+                  background: "rgba(224, 150, 76, 0.12)",
+                  boxShadow: "0 0 0 9999px rgba(250, 246, 239, 0.58)",
+                  transition: "top 180ms ease, left 180ms ease, width 180ms ease, height 180ms ease",
+                }}
+              />
+            )}
+            {lineFocusEnabled && lineFocusLines.length > 0 && (
+              <div
+                className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full"
+                style={{
+                  zIndex: 6,
+                  padding: "6px 8px 6px 12px",
+                  border: "1px solid var(--border)",
+                  background: "var(--card)",
+                  boxShadow: "0 8px 24px rgba(62, 48, 38, 0.16)",
+                  color: "var(--foreground)",
+                  fontFamily: "Inter, sans-serif",
+                  fontSize: "11px",
+                }}
+              >
+                <span>{lineFocusIndex + 1} / {lineFocusLines.length}</span>
+                <button
+                  onClick={() => setLineFocusManuallyPaused((paused) => !paused)}
+                  aria-label={lineFocusPaused ? "继续逐行专注" : "暂停逐行专注"}
+                  className="w-7 h-7 flex items-center justify-center rounded-full"
+                  style={{ background: "var(--secondary)" }}
+                >
+                  {lineFocusPaused ? <Play size={13} /> : <Pause size={13} />}
+                </button>
+                <button
+                  onClick={() => setLineFocusEnabled(false)}
+                  aria-label="关闭逐行专注"
+                  className="w-7 h-7 flex items-center justify-center rounded-full"
+                  style={{ background: "var(--secondary)" }}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            )}
             {!fixedLayout && measurementIndex >= 0 && measurementSrcdoc
               && measurementTarget === `${measurementIndex}:${layoutRevision}` && (
               <iframe
