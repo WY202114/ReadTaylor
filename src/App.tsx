@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { ReaderView } from "./components/ReaderView";
 import { BookCover } from "./components/BookCover";
@@ -27,6 +27,9 @@ import { deleteNotesForBook, loadNotes } from "./lib/notes";
 import { deletePaginationCacheForBook } from "./lib/paginationCache";
 import { deleteBookPreferences } from "./lib/readerPreferences";
 import { coverFileKey } from "./lib/epubCover";
+import { PdfImportDialog } from "./components/pdf/PdfImportDialog";
+import { deletePdfPosition, loadPdfPosition } from "./lib/pdf/position";
+import type { PdfPosition, PdfReadingMode } from "./lib/pdf/types";
 import {
   desktopJobId,
   isDesktopApp,
@@ -35,8 +38,9 @@ import {
 } from "./lib/desktop";
 import {
   archiveToFixedLayoutEPUB,
-  pdfToFixedLayoutEPUB,
 } from "./lib/fixedLayoutEpub";
+
+const PdfReaderView = lazy(() => import("./components/pdf/PdfReaderView").then((module) => ({ default: module.PdfReaderView })));
 
 const APP_VERSION = "3.0.2";
 
@@ -65,6 +69,10 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const activeDesktopJob = useRef("");
+  const [pdfImportName, setPdfImportName] = useState<string | null>(null);
+  const pdfChoice = useRef<((mode: PdfReadingMode | null) => void) | null>(null);
+  const importing = useRef(false);
+  const pdfLivePosition = useRef<PdfPosition>();
   const desktopImportHandler = useRef<(refs: DesktopBookReference[]) => Promise<void>>(
     async () => undefined
   );
@@ -138,7 +146,9 @@ export default function App() {
     return (book.lastReadAt ?? 0) > (latest.lastReadAt ?? 0) ? book : latest;
   }, undefined);
   // TODO: 旧数据若缺少章节标题或 lastReadAt，等现有流程补齐后再展示；不以导入时间代替阅读时间。
-  const continueChapterTitle = continueReadingBook?.chapters[continueReadingBook.lastChapter]?.title?.trim();
+  const continueChapterTitle = continueReadingBook?.mode === "pdf"
+    ? `第 ${loadPdfPosition(continueReadingBook.id, continueReadingBook.pdf?.sha256)?.pageNumber || 1} 页`
+    : continueReadingBook?.chapters[continueReadingBook.lastChapter]?.title?.trim();
   const continueDateLabel = lastReadDateLabel(continueReadingBook?.lastReadAt);
   const continueMetadata = [continueReadingBook?.author || "作者未知", continueChapterTitle, continueDateLabel].filter(Boolean).join(" · ");
   const finishedBooks = books.filter((b) => b.progress >= 100);
@@ -157,101 +167,134 @@ export default function App() {
     );
     const next = [...imported].reverse().concat(retained);
     if (!saveBooks(next)) return false;
+    for (const replacement of imported) {
+      const old = booksRef.current.find((book) => book.id === replacement.id);
+      if (old?.pdf && old.pdf.sourceFileKey !== replacement.pdf?.sourceFileKey) void delFile(old.pdf.sourceFileKey);
+    }
     booksRef.current = next;
     setBooks(next);
     return true;
   };
 
-  const importBrowserFiles = async (files: File[]) => {
-    const imported: Book[] = [];
-    const errors: string[] = [];
-    for (let index = 0; index < files.length; index++) {
-      const file = files[index];
-      const ext = (file.name.split(".").pop() || "").toLowerCase();
-      const sourceKey = `browser:${file.name}:${file.size}:${file.lastModified}`;
-      const existing = booksRef.current.find((book) => book.sourceKey === sourceKey);
-      stick(`正在解析 ${file.name}${files.length > 1 ? `（${index + 1}/${files.length}）` : ""}…`);
-      const { book, error } = await bookFromFile(file, { sourceKey, id: existing?.id });
-      if (book) {
-        if (existing) {
-          book.progress = existing.progress;
-          book.lastChapter = Math.min(existing.lastChapter, book.chapters.length - 1);
-          book.lastScroll = existing.lastScroll || 0;
-          book.lastReadAt = existing.lastReadAt;
-        }
-        imported.push(book);
-      }
-      if (error) errors.push(`${file.name}：${error}`);
-      if (ext === "pdf") await new Promise((resolve) => window.setTimeout(resolve, 0));
-    }
+  const choosePdfMode = (name: string) => new Promise<PdfReadingMode | null>((resolve) => {
+    pdfChoice.current = resolve;
+    setPdfImportName(name);
+  });
+  const finishPdfChoice = (mode: PdfReadingMode | null) => {
+    setPdfImportName(null);
+    pdfChoice.current?.(mode);
+    pdfChoice.current = null;
+  };
+  const importDialog = pdfImportName !== null && <PdfImportDialog name={pdfImportName} onChoose={finishPdfChoice} />;
 
-    if (imported.length && !addImportedBooks(imported)) {
-      flash("本地存储空间不足，未能把书籍加入书架。");
-      return;
-    }
-    if (errors.length) {
-      flash(imported.length ? `已导入 ${imported.length} 本，另有 ${errors.length} 本失败。` : errors[0]);
-    } else if (imported.length) {
-      flash(`已导入 ${imported.length} 本书，所有内容都保存在本机。`);
-    }
+  const importBrowserFiles = async (files: File[]) => {
+    if (importing.current) return;
+    importing.current = true;
+    try {
+      const pdfs = files.filter((file) => /\.pdf$/i.test(file.name) || file.type === "application/pdf");
+      const pdfMode = pdfs.length ? await choosePdfMode(pdfs.length === 1 ? pdfs[0].name : `${pdfs.length} 份 PDF 使用同一种阅读方式`) : undefined;
+      if (pdfMode === null) return;
+      const imported: Book[] = [];
+      const errors: string[] = [];
+      for (let index = 0; index < files.length; index++) {
+        const file = files[index];
+        const ext = (file.name.split(".").pop() || "").toLowerCase();
+        const isPdf = ext === "pdf" || file.type === "application/pdf";
+        // A different mode creates a separate book. Legacy books are never overwritten.
+        const sourceKey = `browser:${file.name}:${file.size}:${file.lastModified}${isPdf ? `:pdf:${pdfMode}` : ""}`;
+        const existing = booksRef.current.find((book) => book.sourceKey === sourceKey);
+        stick(`正在解析 ${file.name}${files.length > 1 ? `（${index + 1}/${files.length}）` : ""}…`);
+        const { book, error } = await bookFromFile(file, { sourceKey, id: existing?.id, pdfMode: pdfMode || undefined,
+          onPdfProgress: (page, total) => stick(`正在检查文字层 ${page}/${total}：${file.name}`),
+        });
+        if (book) {
+          if (existing && (!book.pdf || existing.pdf?.sha256 === book.pdf.sha256)) {
+            book.progress = existing.progress;
+            book.lastChapter = Math.min(existing.lastChapter, Math.max(0, book.chapters.length - 1));
+            book.lastScroll = existing.lastScroll || 0;
+            book.lastReadAt = existing.lastReadAt;
+          }
+          imported.push(book);
+        }
+        if (error) errors.push(`${file.name}：${error}`);
+        if (ext === "pdf") await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+
+      if (imported.length && !addImportedBooks(imported)) {
+        flash("本地存储空间不足，未能把书籍加入书架。");
+        return;
+      }
+      if (errors.length) {
+        flash(imported.length ? `已导入 ${imported.length} 本，另有 ${errors.length} 本失败。` : errors[0]);
+      } else if (imported.length) {
+        flash(`已导入 ${imported.length} 本书，所有内容都保存在本机。`);
+      }
+    } finally { importing.current = false; }
   };
 
   const importDesktopReferences = async (references: DesktopBookReference[]) => {
     if (!references.length) return;
-    const imported: Book[] = [];
-    const errors: string[] = [];
-    let convertedCount = 0;
-    for (let index = 0; index < references.length; index++) {
-      const reference = references[index];
-      const jobId = desktopJobId();
-      activeDesktopJob.current = jobId;
-      stick(`正在处理 ${reference.name}${references.length > 1 ? `（${index + 1}/${references.length}）` : ""}…`);
-      try {
-        const prepared = await prepareDesktopBook(reference, jobId);
-        let readableFile = prepared.file;
-        let convertedLocally = prepared.converted;
-        if (prepared.sourceExtension === "pdf") {
-          readableFile = await pdfToFixedLayoutEPUB(prepared.file, (update) => stick(update.message));
-          convertedLocally = true;
-        } else if (prepared.sourceExtension === "cbz" || prepared.sourceExtension === "zip") {
-          readableFile = await archiveToFixedLayoutEPUB(prepared.file, (update) => stick(update.message));
-          convertedLocally = true;
+    if (importing.current) return;
+    importing.current = true;
+    try {
+      const pdfs = references.filter((reference) => /\.pdf$/i.test(reference.name));
+      const pdfMode = pdfs.length ? await choosePdfMode(pdfs.length === 1 ? pdfs[0].name : `${pdfs.length} 份 PDF 使用同一种阅读方式`) : undefined;
+      if (pdfMode === null) return;
+      const imported: Book[] = [];
+      const errors: string[] = [];
+      let convertedCount = 0;
+      for (let index = 0; index < references.length; index++) {
+        const reference = references[index];
+        const jobId = desktopJobId();
+        activeDesktopJob.current = jobId;
+        stick(`正在处理 ${reference.name}${references.length > 1 ? `（${index + 1}/${references.length}）` : ""}…`);
+        try {
+          const prepared = await prepareDesktopBook(reference, jobId);
+          let readableFile = prepared.file;
+          let convertedLocally = prepared.converted;
+          if (prepared.sourceExtension === "cbz" || prepared.sourceExtension === "zip") {
+            readableFile = await archiveToFixedLayoutEPUB(prepared.file, (update) => stick(update.message));
+            convertedLocally = true;
+          }
+          const sourceKey = `${reference.sourceKey}${prepared.sourceExtension === "pdf" ? `:pdf:${pdfMode}` : ""}`;
+          const existing = booksRef.current.find((book) => book.sourceKey === sourceKey);
+          const { book, error } = await bookFromFile(readableFile, {
+            sourceKey,
+            id: existing?.id,
+            pdfMode: pdfMode || undefined,
+            onPdfProgress: (page, total) => stick(`正在检查文字层 ${page}/${total}：${reference.name}`),
+          });
+          if (error || !book) throw new Error(error || "无法读取转换后的 EPUB。");
+          if (existing && (!book.pdf || existing.pdf?.sha256 === book.pdf.sha256)) {
+            book.progress = existing.progress;
+            book.lastChapter = Math.min(existing.lastChapter, Math.max(0, book.chapters.length - 1));
+            book.lastScroll = existing.lastScroll || 0;
+            book.lastReadAt = existing.lastReadAt;
+          }
+          if (convertedLocally) {
+            book.fileType = prepared.sourceExtension.toUpperCase();
+            convertedCount += 1;
+          }
+          imported.push(book);
+        } catch (error) {
+          errors.push(`${reference.name}：${error instanceof Error ? error.message : "导入失败"}`);
         }
-        const existing = booksRef.current.find((book) => book.sourceKey === reference.sourceKey);
-        const { book, error } = await bookFromFile(readableFile, {
-          sourceKey: reference.sourceKey,
-          id: existing?.id,
-        });
-        if (error || !book) throw new Error(error || "无法读取转换后的 EPUB。");
-        if (existing) {
-          book.progress = existing.progress;
-          book.lastChapter = Math.min(existing.lastChapter, book.chapters.length - 1);
-          book.lastScroll = existing.lastScroll || 0;
-          book.lastReadAt = existing.lastReadAt;
-        }
-        if (convertedLocally) {
-          book.fileType = prepared.sourceExtension.toUpperCase();
-          convertedCount += 1;
-        }
-        imported.push(book);
-      } catch (error) {
-        errors.push(`${reference.name}：${error instanceof Error ? error.message : "导入失败"}`);
       }
-    }
-    activeDesktopJob.current = "";
-    if (imported.length && !addImportedBooks(imported)) {
-      flash("本地存储空间不足，未能把转换后的书籍加入书架。");
-      return;
-    }
-    if (errors.length) {
-      console.error("部分桌面书籍导入失败", errors);
-      flash(imported.length ? `已导入 ${imported.length} 本，另有 ${errors.length} 本失败。` : errors[0]);
-    } else {
-      flash(`已导入 ${imported.length} 本书。${convertedCount ? "转换已在本机完成。" : ""}`);
-    }
-    if (window.readTaylorDesktop) {
-      void window.readTaylorDesktop.getToolchain().then(setToolchain);
-    }
+      activeDesktopJob.current = "";
+      if (imported.length && !addImportedBooks(imported)) {
+        flash("本地存储空间不足，未能把转换后的书籍加入书架。");
+        return;
+      }
+      if (errors.length) {
+        console.error("部分桌面书籍导入失败", errors);
+        flash(imported.length ? `已导入 ${imported.length} 本，另有 ${errors.length} 本失败。` : errors[0]);
+      } else {
+        flash(`已导入 ${imported.length} 本书。${convertedCount ? "转换已在本机完成。" : ""}`);
+      }
+      if (window.readTaylorDesktop) {
+        void window.readTaylorDesktop.getToolchain().then(setToolchain);
+      }
+    } finally { importing.current = false; activeDesktopJob.current = ""; }
   };
   desktopImportHandler.current = importDesktopReferences;
 
@@ -271,6 +314,9 @@ export default function App() {
 
   const deleteBook = (id: string, title: string) => {
     if (!window.confirm(`从书架移除《${title}》？文件本就只在本地，移除后需重新上传。`)) return;
+    const book = booksRef.current.find((item) => item.id === id);
+    if (book?.pdf) void delFile(book.pdf.sourceFileKey);
+    deletePdfPosition(id);
     setBooks((prev) => prev.filter((b) => b.id !== id));
     delFile(id); // 清掉 IndexedDB 里的原始文件（EPUB 原版渲染用）
     delFile(coverFileKey(id));
@@ -280,7 +326,7 @@ export default function App() {
     deleteReadingPosition(id);
   };
 
-  const openBook = (book: Book) => setReadingBook({ ...book, lastReadAt: Date.now() });
+  const openBook = (book: Book) => { pdfLivePosition.current = undefined; setReadingBook({ ...book, lastReadAt: Date.now() }); };
 
   const persistReadingPosition = useCallback((lastChapterIndex: number, lastScroll: number, lastPage: Book["lastPage"] | undefined, overallProgress: number) => {
     if (!readingBook) return;
@@ -312,13 +358,23 @@ export default function App() {
     return (
       <div className={isDark ? "dark" : ""} style={{ background: "var(--background)" }}>
         <div style={{ width: "100%", height: "100dvh", overflow: "hidden", position: "relative" }}>
-          <ReaderView
+          {readingBook.mode === "pdf" ? <Suspense fallback={<p className="pdf-notice">正在打开 PDF 阅读器…</p>}>
+            <PdfReaderView book={readingBook} isDark={isDark} onToggleDark={() => setIsDark((d) => !d)}
+              onPositionChange={(position) => { pdfLivePosition.current = position; }}
+              onBack={() => {
+                const position = pdfLivePosition.current;
+                setBooks((previous) => previous.map((book) => book.id === readingBook.id
+                  ? { ...book, progress: position?.progress ?? book.progress, lastReadAt: position?.updatedAt ?? Date.now() } : book));
+                setReadingBook(null);
+              }} />
+          </Suspense> : <ReaderView
             book={readingBook}
             onBack={closeReader}
             onPositionChange={persistReadingPosition}
             isDark={isDark}
             onToggleDark={() => setIsDark((d) => !d)}
-          />
+          />}
+          {importDialog}
         </div>
       </div>
     );
@@ -326,6 +382,7 @@ export default function App() {
 
   return (
     <div className={`library-shell${isDark ? " dark" : ""}`}>
+      {importDialog}
       <input ref={fileInputRef} type="file" accept=".txt,.md,.epub,.pdf,.cbz,.zip,text/plain" multiple hidden onChange={onFileChange} />
       <LibraryNavigation activeTab={activeTab} onNavigate={setActiveTab} bookCount={books.length} isDark={isDark} onToggleDark={() => setIsDark((value) => !value)} version={APP_VERSION} />
       <main className={`library-main${activeTab === "library" ? " library-main--shelf" : ""}`}>

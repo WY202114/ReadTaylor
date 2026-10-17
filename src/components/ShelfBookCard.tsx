@@ -90,7 +90,7 @@ export function ShelfBookCard({ book, onOpen, onRemove, view = "grid" }: ShelfBo
         <h3>{book.title}</h3>
       </button>
       <p className="shelf-book-author" title={book.author}>{book.author || "作者未知"}</p>
-      <span className="shelf-book-chapters">{book.chapters.length} 章</span>
+      <span className="shelf-book-chapters">{book.mode === "pdf" ? `${book.pdf?.pageCount || 0} 页` : `${book.chapters.length} 章`}</span>
       {view === "list" && <div className="shelf-list-actions">{moreAction}{moreMenu}</div>}
     </article>
   );

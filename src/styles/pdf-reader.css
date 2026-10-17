@@ -1,0 +1,59 @@
+.pdf-reader { display:flex; flex-direction:column; height:100%; min-width:0; overflow:hidden; background:var(--background); color:var(--foreground); font:13px "Inter","Microsoft YaHei",sans-serif; }
+.pdf-reader button,.pdf-import-dialog button { display:inline-flex; justify-content:center; align-items:center; gap:6px; min-width:34px; min-height:34px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--foreground); cursor:pointer; padding:5px 9px; }
+.pdf-reader button:hover,.pdf-import-dialog button:hover { background:var(--secondary); }
+.pdf-reader button:disabled { opacity:.4; cursor:default; }
+.pdf-reader :is(button,input,select):focus-visible,.pdf-import-dialog :is(button,input):focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.pdf-reader-header { display:flex; align-items:center; gap:14px; padding:10px 20px; padding-top:max(10px,env(safe-area-inset-top)); border-bottom:1px solid var(--border); }
+.pdf-reader-title { flex:1; min-width:0; }
+.pdf-reader-title h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:500 19px "Lora","Songti SC","SimSun",serif; margin:0 0 3px; }
+.pdf-reader-title>span { color:var(--muted-foreground); font-size:11px; }
+.pdf-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px 14px; padding:8px 12px; border-bottom:1px solid var(--border); }
+.pdf-control-group,.pdf-control-group form { display:flex; align-items:center; gap:6px; }
+.pdf-reader :is(input,select) { min-width:0; height:32px; border:1px solid var(--border); border-radius:5px; background:var(--card); color:var(--foreground); padding:4px 6px; font:inherit; }
+.pdf-control-group input { width:54px; text-align:center; appearance:textfield; }
+.pdf-control-group input::-webkit-inner-spin-button { appearance:none; }
+.pdf-zoom-controls input { width:48px; }
+.pdf-reader-body { display:flex; flex:1; min-height:0; min-width:0; position:relative; }
+.pdf-page-stage { position:relative; min-width:0; flex:1; background:var(--secondary); }
+.pdf-viewport { position:absolute; inset:0; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; outline-offset:-3px !important; }
+.pdf-reader .pdfViewer { padding:16px 0 32px; --page-bg-color:#fff; }
+.pdf-reader .pdfViewer .page { border:0; margin:0 auto 18px; box-shadow:0 3px 14px rgba(60,40,20,.14); background:#fff; }
+.dark .pdf-reader .pdfViewer .page { box-shadow:0 4px 18px rgba(0,0,0,.4); }
+.pdf-reader .pdfViewer .canvasWrapper { filter:none; }
+.pdf-reader .textLayer { color-scheme:light; }
+.pdf-reader .textLayer .highlight { background:rgba(180,125,55,.32); }
+.pdf-reader .textLayer .highlight.selected { background:rgba(155,96,60,.55); }
+.pdf-outline { width:250px; max-width:80%; overflow:auto; flex-shrink:0; background:var(--card); border-right:1px solid var(--border); }
+.pdf-outline header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px; }
+.pdf-outline ul { list-style:none; margin:0; padding:0; }
+.pdf-outline li>button { text-align:left; justify-content:flex-start; width:100%; border:0; border-radius:0; padding:10px 14px; line-height:1.6; overflow-wrap:anywhere; }
+.pdf-outline p { padding:0 16px; color:var(--muted-foreground); line-height:1.9; }
+.pdf-search { display:flex; align-items:center; gap:7px; padding:8px 16px; border-bottom:1px solid var(--border); background:var(--card); }
+.pdf-search>input { flex:1; width:120px; }
+.pdf-search>span { font-size:11px; color:var(--muted-foreground); }
+.pdf-notice,.pdf-legacy-notice { flex-shrink:0; margin:0; padding:7px 16px; background:var(--card); border-bottom:1px solid var(--border); color:var(--muted-foreground); font-size:12px; line-height:1.6; }
+.pdf-error { color:var(--foreground); }
+.pdf-loading { position:absolute; z-index:2; top:24px; left:0; right:0; text-align:center; color:var(--muted-foreground); }
+.pdf-sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.pdf-import-dialog { width:min(460px,calc(100vw - 32px)); box-sizing:border-box; padding:26px; border:1px solid var(--border); border-radius:12px; background:var(--card); color:var(--foreground); box-shadow:0 12px 50px #302d292b; }
+.pdf-import-dialog::backdrop { background:rgba(35,28,22,.35); }
+.pdf-import-dialog h2 { margin:0 0 10px; font:500 23px "Lora","Songti SC","SimSun",serif; }
+.pdf-import-dialog p { font-size:12px; line-height:1.8; color:var(--muted-foreground); }
+.pdf-import-name { overflow-wrap:anywhere; }
+.pdf-import-dialog fieldset { padding:0; border:0; margin:20px 0; display:grid; gap:12px; }
+.pdf-import-dialog label { display:flex; gap:12px; padding:14px 12px; border:1px solid var(--border); border-radius:8px; cursor:pointer; }
+.pdf-import-dialog label:has(input:checked) { border-color:var(--accent); background:var(--secondary); }
+.pdf-import-dialog input { accent-color:var(--accent); flex-shrink:0; }
+.pdf-import-dialog strong { display:block; font-size:13px; font-weight:500; }
+.pdf-import-dialog small { display:block; margin-top:6px; line-height:1.8; color:var(--muted-foreground); }
+.pdf-import-dialog footer { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
+.pdf-import-dialog .pdf-primary { background:var(--accent); color:var(--accent-foreground); border-color:var(--accent); }
+@media(max-width:759px) {
+  .pdf-reader-header { padding:9px 12px; }
+  .pdf-reader-title h1 { font-size:16px; }
+  .pdf-toolbar { gap:7px; padding:8px; }
+  .pdf-toolbar>button>span { display:none; }
+  .pdf-outline { position:absolute; inset:0 auto 0 0; z-index:5; box-shadow:6px 0 20px #302d2926; }
+  .pdf-search { padding:8px; flex-wrap:wrap; }
+  .pdf-search>span { max-width:110px; }
+}

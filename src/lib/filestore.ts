@@ -22,9 +22,13 @@ function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T
   return openDB().then(
     (db) =>
       new Promise<T>((resolve, reject) => {
-        const store = db.transaction(STORE, mode).objectStore(STORE);
+        const transaction = db.transaction(STORE, mode);
+        const store = transaction.objectStore(STORE);
         const req = fn(store);
-        req.onsuccess = () => resolve(req.result);
+        // Request success can precede a failed commit (for example, disk quota).
+        // Only report the original file as saved after the transaction commits.
+        transaction.oncomplete = () => { db.close(); resolve(req.result); };
+        transaction.onabort = () => { db.close(); reject(transaction.error || new Error("本地文件保存失败")); };
         req.onerror = () => reject(req.error);
       })
   );

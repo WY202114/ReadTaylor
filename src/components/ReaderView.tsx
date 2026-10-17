@@ -1788,6 +1788,7 @@ export function ReaderView({ book, onBack, onPositionChange, isDark, onToggleDar
       </aside>
 
       <main className="reader-main relative flex min-w-0 flex-col overflow-hidden">
+      {book.fileType === "PDF" && !book.pdf && <p className="pdf-legacy-notice" role="status">旧 PDF 仍可继续阅读。重新导入原文件以使用原版阅读。</p>}
       {/* Progress bar */}
       <div
         className="absolute top-0 left-0 h-0.5 z-20 transition-all duration-200"

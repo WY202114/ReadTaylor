@@ -24,3 +24,16 @@ application resources.
 
 - Project: https://www.electronjs.org/
 - License: https://github.com/electron/electron/blob/main/LICENSE
+
+## PDF.js
+
+The web and desktop editions use the existing `pdfjs-dist` 4.10.38 dependency
+for PDF parsing, page rendering, text selection, links and search. PDF.js is
+licensed under Apache-2.0. Its viewer is used directly as a dependency; the
+ReadTaylor PDF integration is independently implemented, without copying code
+from `cynicalight/reader`.
+
+- Project: https://mozilla.github.io/pdf.js/
+- Source and license: https://github.com/mozilla/pdf.js
+- The build includes the PDF.js license at `dist/pdfjs/LICENSE`; bundled font
+  and CMap notices are retained in their resource directories.

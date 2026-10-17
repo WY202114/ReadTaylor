@@ -3,6 +3,8 @@
 import { putFile } from "./filestore";
 import { archiveToFixedLayoutEPUB, pdfToFixedLayoutEPUB } from "./fixedLayoutEpub";
 import { findEpubCover, storeBookCover } from "./epubCover";
+import type { PdfMetadata, PdfReadingMode } from "./pdf/types";
+import { loadPdfPosition } from "./pdf/position";
 
 export interface Chapter {
   id: string;
@@ -33,7 +35,8 @@ export interface Book {
   lastPage?: ReadingPage;
   lastReadAt?: number; // 最近一次打开或阅读该书的时间，用于“继续阅读”排序
   addedAt: number;
-  mode?: "text" | "fidelity"; // 缺省按 text 处理；EPUB 为 fidelity（原版渲染）
+  mode?: "text" | "fidelity" | "pdf"; // pdf uses physical pages, never reflow pagination.
+  pdf?: PdfMetadata; // Optional: legacy PDF/EPUB records stay unchanged and readable.
   layout?: "reflowable" | "fixed"; // EPUB 排版：文字重排或固定页面（漫画 / 扫描 PDF）
   sourceKey?: string; // 同一来源再次打开时更新现有书籍，避免重复
 }
@@ -41,6 +44,8 @@ export interface Book {
 export interface BookImportOptions {
   id?: string;
   sourceKey?: string;
+  pdfMode?: PdfReadingMode;
+  onPdfProgress?: (page: number, total: number) => void;
 }
 
 const STORAGE_KEY = "readtaylor.books.v1";
@@ -373,25 +378,41 @@ export async function bookFromFile(
 
   if (ext === "pdf" || file.type === "application/pdf") {
     try {
+      const { inspectPdf } = await import("./pdf/document");
+      const pdfId = options.id || uid();
+      const pdfOptions = { ...options, id: pdfId };
+      const inspected = await inspectPdf(file, pdfId, options.pdfMode || "original", options.onPdfProgress);
+      if (inspected.metadata.readingMode === "original") {
+        const book = buildBook(inspected.title || baseName, "PDF", [], inspected.author || "作者未知", pdfOptions);
+        book.mode = "pdf";
+        book.pdf = inspected.metadata;
+        await putFile(inspected.metadata.sourceFileKey, file);
+        return { book };
+      }
       const text = await pdfToText(file);
       if (!text.trim()) {
         const fixedLayout = await pdfToFixedLayoutEPUB(file);
-        const result = await epubToBook(fixedLayout, baseName, options);
-        if (result.book) result.book.fileType = "PDF";
+        const result = await epubToBook(fixedLayout, baseName, pdfOptions);
+        if (result.book) {
+          result.book.fileType = "PDF";
+          result.book.pdf = inspected.metadata;
+          await putFile(inspected.metadata.sourceFileKey, file);
+        }
         return result;
       }
-      return {
-        book: buildBook(
+      const book = buildBook(
           baseName,
           "PDF",
           parseTextToChapters(text, baseName),
           "本地上传",
-          options
-        ),
-      };
+          pdfOptions
+        );
+      book.pdf = inspected.metadata;
+      await putFile(inspected.metadata.sourceFileKey, file);
+      return { book };
     } catch (e) {
       console.error("PDF 解析失败", e);
-      return { error: "PDF 解析失败，文件可能已加密或损坏。" };
+      return { error: "PDF 导入失败：文件可能加密、损坏，或本机存储空间不足。" };
     }
   }
 
@@ -429,6 +450,10 @@ export function loadBooks(): Book[] {
     if (!Array.isArray(parsed)) return [];
     const positions = loadReadingPositions();
     return (parsed as Book[]).map((book) => {
+      if (book.mode === "pdf") {
+        const position = loadPdfPosition(book.id, book.pdf?.sha256);
+        return position ? { ...book, progress: position.progress, lastReadAt: position.updatedAt } : book;
+      }
       const saved = positions[book.id];
       if (!saved) return book;
       return {
