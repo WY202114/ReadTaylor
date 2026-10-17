@@ -55,25 +55,6 @@
   min-height: auto;
 }
 
-.library-main--shelf .library-heading {
-  margin-bottom: 12px;
-}
-
-.library-main--shelf .library-heading .eyebrow {
-  display: none;
-}
-
-.library-main--shelf .library-heading h1 {
-  font-size: 28px;
-  line-height: 1.15;
-}
-
-.library-main--shelf .heading-description {
-  margin-top: 4px;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
 .library-main--shelf .shelf-search--top {
   width: min(560px, 100%);
   height: 52px;

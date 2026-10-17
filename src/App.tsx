@@ -332,10 +332,7 @@ export default function App() {
         <AnimatePresence mode="wait">
           {activeTab === "library" ? (
             <motion.div key="library" className="library-page" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }}>
-              <header className="library-heading">
-                <div><p className="eyebrow">THE READING ROOM</p><h1>我的书架<span>。</span></h1><p className="heading-description">把时间留给好书，把想法留在这里。</p></div>
-                <button className="primary-button" onClick={pickFile}><Plus size={18} />导入书籍</button>
-              </header>
+              <h1 className="sr-only">我的书架</h1>
               <ShelfSearch search={searchQuery} onSearch={setSearchQuery} />
               {continueReadingBook && <section className="shelf-resume" aria-label="继续上次的阅读">
                 <button className="shelf-resume-cover" aria-label={`继续阅读 ${continueReadingBook.title}`} onClick={() => openBook(continueReadingBook)}><BookCover book={continueReadingBook} variant="shelf" style={{ width: "100%", height: "100%", borderRadius: "4px" }} /></button>
