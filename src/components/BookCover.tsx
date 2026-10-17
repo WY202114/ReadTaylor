@@ -7,9 +7,10 @@ interface BookCoverProps {
   book: Pick<Book, "id" | "title" | "color" | "fileType">;
   style?: CSSProperties;
   dimmed?: boolean;
+  variant?: "default" | "shelf";
 }
 
-export function BookCover({ book, style, dimmed }: BookCoverProps) {
+export function BookCover({ book, style, dimmed, variant = "default" }: BookCoverProps) {
   const [coverUrl, setCoverUrl] = useState("");
 
   useEffect(() => {
@@ -29,7 +30,8 @@ export function BookCover({ book, style, dimmed }: BookCoverProps) {
 
   return (
     <div
-      style={{
+      className={variant === "shelf" ? "shelf-cover-art" : undefined}
+      style={variant === "shelf" ? { opacity: dimmed ? 0.7 : 1, ...style } : {
         background: `linear-gradient(150deg, ${book.color}, ${shade(book.color, 0.62)})`,
         display: "flex",
         flexDirection: "column",
@@ -51,10 +53,13 @@ export function BookCover({ book, style, dimmed }: BookCoverProps) {
             inset: 0,
             width: "100%",
             height: "100%",
-            objectFit: "contain",
-            background: "var(--card)",
+            objectFit: variant === "shelf" ? "cover" : "contain",
+            objectPosition: variant === "shelf" ? "center top" : "center",
+            background: variant === "shelf" ? "transparent" : "var(--card)",
           }}
         />
+      ) : variant === "shelf" ? (
+        <span className="shelf-cover-placeholder">{book.title}</span>
       ) : (
         <>
           <span

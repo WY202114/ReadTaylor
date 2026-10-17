@@ -2,6 +2,7 @@
 @import './tailwind.css';
 @import './theme.css';
 @import './room.css';
+@import './bookshelf.css';
 
 html,
 body,
