@@ -1,10 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { ReaderView } from "./components/ReaderView";
-import { BookCover } from "./components/BookCover";
 import { ShelfBookCard } from "./components/ShelfBookCard";
-import { ShelfToolbar } from "./components/ShelfToolbar";
-import { ShelfSearch } from "./components/ShelfSearch";
+import { ShelfHeader } from "./components/ShelfHeader";
 import { LibraryNavigation } from "./components/LibraryNavigation";
 import { loadBookshelfPreferences, saveBookshelfPreferences } from "./components/bookshelfPreferences";
 import {
@@ -390,25 +388,11 @@ export default function App() {
           {activeTab === "library" ? (
             <motion.div key="library" className="library-page" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }}>
               <h1 className="sr-only">我的书架</h1>
-              <ShelfSearch search={searchQuery} onSearch={setSearchQuery} />
-              {continueReadingBook && <section className="shelf-resume" aria-label="继续上次的阅读">
-                <button className="shelf-resume-cover" aria-label={`继续阅读 ${continueReadingBook.title}`} onClick={() => openBook(continueReadingBook)}><BookCover book={continueReadingBook} variant="shelf" style={{ width: "100%", height: "100%", borderRadius: "4px" }} /></button>
-                <div className="shelf-resume-copy">
-                  <h2 title={continueReadingBook.title}>{continueReadingBook.title}</h2>
-                  <p className="shelf-resume-metadata" title={continueMetadata}>
-                    <span>{continueReadingBook.author || "作者未知"}</span>
-                    {continueChapterTitle && <><span aria-hidden="true"> · </span><span>{continueChapterTitle}</span></>}
-                    {continueDateLabel && <><span aria-hidden="true"> · </span><time dateTime={new Date(continueReadingBook.lastReadAt!).toISOString()}>{continueDateLabel}</time></>}
-                  </p>
-                  <div className="shelf-resume-progress">
-                    <div className="progress-track" role="progressbar" aria-label="阅读进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={continueReadingBook.progress}><span style={{ width: `${continueReadingBook.progress}%` }} /></div>
-                    <span>已读 {continueReadingBook.progress}%</span>
-                  </div>
-                </div>
-                <button className="primary-button shelf-resume-button" onClick={() => openBook(continueReadingBook)}>继续阅读<ArrowUpRight size={17} aria-hidden="true" /></button>
-              </section>}
+              <ShelfHeader search={searchQuery} onSearch={setSearchQuery} count={filteredBooks.length}
+                preferences={shelfPreferences} onPreferencesChange={setShelfPreferences}
+                resumeBook={continueReadingBook} resumeMetadata={continueMetadata} chapterTitle={continueChapterTitle}
+                dateLabel={continueDateLabel} onOpen={openBook} />
               <section className="shelf-section" aria-label="全部书籍">
-                <ShelfToolbar count={filteredBooks.length} search={searchQuery} preferences={shelfPreferences} onPreferencesChange={setShelfPreferences} />
                 {books.length === 0 && !searchQuery.trim() ? <div className="shelf-empty"><span className="empty-icon"><BookOpen size={27} /></span><h3>好故事，等你放上书架</h3><p>导入你的电子书，随时阅读、翻译和记录想法。</p><button className="primary-button" onClick={pickFile}><Upload size={16} />导入第一本书</button><small>支持 {supportedFormatLabel}</small></div> : <>
                   {filteredBooks.length > 0 ? <div className={shelfPreferences.view === "grid" ? "library-book-grid" : "library-book-list"}>{filteredBooks.map((book) => (
                     <ShelfBookCard key={book.id} book={book} view={shelfPreferences.view} onOpen={() => openBook(book)} onRemove={() => deleteBook(book.id, book.title)} />

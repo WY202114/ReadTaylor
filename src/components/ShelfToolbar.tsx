@@ -24,6 +24,12 @@ export function ShelfToolbar({ count, search, preferences, onPreferencesChange }
           <button key={value} aria-pressed={preferences.status === value} onClick={() => onPreferencesChange({ ...preferences, status: value })}>{label}</button>
         ))}
       </div>
+      <label className="shelf-status-select">
+        <span className="sr-only">阅读状态</span>
+        <select aria-label="阅读状态" value={preferences.status} onChange={(event) => onPreferencesChange({ ...preferences, status: event.target.value as ShelfStatus })}>
+          {STATUSES.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>
       <label className="shelf-sort">
         <ArrowDownUp size={15} aria-hidden="true" />
         <select aria-label="书籍排序" value={preferences.sort} onChange={(event) => onPreferencesChange({ ...preferences, sort: event.target.value as ShelfSort })}>

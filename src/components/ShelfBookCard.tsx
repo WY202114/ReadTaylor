@@ -58,10 +58,28 @@ export function ShelfBookCard({ book, onOpen, onRemove, view = "grid" }: ShelfBo
     </div>
   );
 
+  if (view === "list") {
+    const extent = book.pdf?.pageCount ? `${book.pdf.pageCount} 页` : `${book.chapters.length} 章`;
+    return <article ref={card} className="shelf-book shelf-book-card shelf-book-card--list" data-more-open={moreOpen || undefined}
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setMoreOpen(false); }}>
+      {/* One native button opens the whole card; the sibling menu stays an independent action. */}
+      <button className="shelf-list-open" onClick={onOpen} aria-label={`阅读 ${book.title}`}>
+        <span className="shelf-list-cover"><BookCover book={book} variant="shelf" /></span>
+        <span className="shelf-list-copy">
+          <span className="shelf-list-title" title={book.title}>{book.title}</span>
+          <span className="shelf-list-author" title={book.author || "作者未知"}>{book.author || "作者未知"}</span>
+          <span className="shelf-list-metadata"><span className="shelf-list-format">{book.fileType}</span><span>{extent}</span></span>
+          <span className="shelf-book-progress" aria-label={`已读 ${progress}%`}><span className="progress-track" aria-hidden="true"><span style={{ width: `${progress}%` }} /></span><span>已读 {progress}%</span></span>
+        </span>
+      </button>
+      <div className="shelf-list-actions">{moreAction}{moreMenu}</div>
+    </article>;
+  }
+
   return (
     <article
       ref={card}
-      className={`shelf-book shelf-book-card${view === "list" ? " shelf-book-card--list" : ""}`}
+      className="shelf-book shelf-book-card"
       data-more-open={moreOpen || undefined}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setMoreOpen(false);
@@ -91,7 +109,6 @@ export function ShelfBookCard({ book, onOpen, onRemove, view = "grid" }: ShelfBo
       </button>
       <p className="shelf-book-author" title={book.author}>{book.author || "作者未知"}</p>
       <span className="shelf-book-chapters">{book.mode === "pdf" ? `${book.pdf?.pageCount || 0} 页` : `${book.chapters.length} 章`}</span>
-      {view === "list" && <div className="shelf-list-actions">{moreAction}{moreMenu}</div>}
     </article>
   );
 }
