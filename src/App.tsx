@@ -4,11 +4,11 @@ import { ReaderView } from "./components/ReaderView";
 import { BookCover } from "./components/BookCover";
 import { ShelfBookCard } from "./components/ShelfBookCard";
 import { ShelfToolbar } from "./components/ShelfToolbar";
+import { ShelfSearch } from "./components/ShelfSearch";
 import { LibraryNavigation } from "./components/LibraryNavigation";
 import { loadBookshelfPreferences, saveBookshelfPreferences } from "./components/bookshelfPreferences";
 import {
   BookOpen,
-  Clock,
   ArrowUpRight,
   ShieldCheck,
   Upload,
@@ -42,17 +42,12 @@ const APP_VERSION = "3.0.2";
 
 type Tab = "library" | "profile";
 
-function lastReadTimeLabel(timestamp?: number): string {
+function lastReadDateLabel(timestamp?: number): string {
   if (!timestamp || !Number.isFinite(timestamp) || timestamp < 0 || timestamp > Date.now()) return "";
-  const elapsed = Date.now() - timestamp;
-  if (elapsed < 60_000) return "刚刚";
-  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
-  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
-  if (elapsed < 604_800_000) return `${Math.floor(elapsed / 86_400_000)} 天前`;
   const date = new Date(timestamp);
   return date.toLocaleDateString("zh-CN", {
-    ...(date.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
-    month: "long",
+    year: "numeric",
+    month: "numeric",
     day: "numeric",
   });
 }
@@ -132,6 +127,7 @@ export default function App() {
       return b.addedAt - a.addedAt || byTitle(a, b);
     });
   }, [books, searchQuery, shelfPreferences.status, shelfPreferences.sort]);
+  // TODO: 阅读足迹将来放到个人中心（profile）页面；保留以下统计逻辑，书架页不再渲染。
   // TODO: 接入真实阅读会话统计后计算时长和连续天数；lastReadAt 不能推导这两项。
   const todayReadingMinutes = 0;
   const consecutiveReadingDays = 0;
@@ -143,7 +139,8 @@ export default function App() {
   }, undefined);
   // TODO: 旧数据若缺少章节标题或 lastReadAt，等现有流程补齐后再展示；不以导入时间代替阅读时间。
   const continueChapterTitle = continueReadingBook?.chapters[continueReadingBook.lastChapter]?.title?.trim();
-  const continueTimeLabel = lastReadTimeLabel(continueReadingBook?.lastReadAt);
+  const continueDateLabel = lastReadDateLabel(continueReadingBook?.lastReadAt);
+  const continueMetadata = [continueReadingBook?.author || "作者未知", continueChapterTitle, continueDateLabel].filter(Boolean).join(" · ");
   const finishedBooks = books.filter((b) => b.progress >= 100);
   const desktopMode = isDesktopApp();
   const supportedFormatLabel = desktopMode
@@ -339,50 +336,26 @@ export default function App() {
                 <div><p className="eyebrow">THE READING ROOM</p><h1>我的书架<span>。</span></h1><p className="heading-description">把时间留给好书，把想法留在这里。</p></div>
                 <button className="primary-button" onClick={pickFile}><Plus size={18} />导入书籍</button>
               </header>
-              <section className="reading-overview" aria-label="阅读概览">
-                <div className={`reading-feature${continueReadingBook ? " reading-feature--continue" : ""}`}>
-                  {continueReadingBook ? <>
-                    <div className="feature-copy">
-                      <p className="eyebrow"><Clock size={14} />继续上次的阅读</p>
-                      <h2>{continueReadingBook.title}</h2>
-                      <p className="feature-author">{continueReadingBook.author}</p>
-                      <div className="feature-progress">
-                        <div className="feature-progress-details">
-                          <span className="feature-progress-value">已读 {continueReadingBook.progress}%</span>
-                          {(continueChapterTitle || continueTimeLabel) && (
-                            <div className="feature-reading-context">
-                              {continueChapterTitle && <span className="feature-chapter" title={continueChapterTitle}>{continueChapterTitle}</span>}
-                              {continueChapterTitle && continueTimeLabel && <span aria-hidden="true">·</span>}
-                              {continueTimeLabel && <time dateTime={new Date(continueReadingBook.lastReadAt!).toISOString()} title={new Date(continueReadingBook.lastReadAt!).toLocaleString("zh-CN")}>{continueTimeLabel}</time>}
-                            </div>
-                          )}
-                        </div>
-                        <div className="progress-track" role="progressbar" aria-label="阅读进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={continueReadingBook.progress}>
-                          <span style={{ width: `${continueReadingBook.progress}%` }} />
-                        </div>
-                      </div>
-                      <button className="primary-button feature-continue-button" onClick={() => openBook(continueReadingBook)}>继续阅读<ArrowUpRight size={18} aria-hidden="true" /></button>
-                    </div>
-                    <button className="feature-cover" aria-label={`继续阅读 ${continueReadingBook.title}`} onClick={() => openBook(continueReadingBook)}><BookCover book={continueReadingBook} style={{ width: "100%", height: "100%", borderRadius: "3px 9px 9px 3px" }} /></button>
-                  </> : <>
-                    <div className="feature-copy"><p className="eyebrow">A LITTLE TIME, A GOOD BOOK</p><h2>翻开一页，<br />走进另一个世界。</h2><p className="feature-author">{books.length ? "从下方挑一本书，开始今天的阅读。" : "从一本喜欢的书开始，慢慢装满你的书架。"}</p><button className="text-button" onClick={pickFile}>导入你的书<ArrowUpRight size={18} /></button></div>
-                    <div className="book-still-life" aria-hidden="true"><div className="decor-book decor-book-back">READ</div><div className="decor-book decor-book-front"><span>THE JOY OF</span><strong>Reading</strong><BookOpen size={32} /><small>ONE PAGE AT A TIME</small></div></div>
-                  </>}
+              <ShelfSearch search={searchQuery} onSearch={setSearchQuery} />
+              {continueReadingBook && <section className="shelf-resume" aria-label="继续上次的阅读">
+                <button className="shelf-resume-cover" aria-label={`继续阅读 ${continueReadingBook.title}`} onClick={() => openBook(continueReadingBook)}><BookCover book={continueReadingBook} variant="shelf" style={{ width: "100%", height: "100%", borderRadius: "4px" }} /></button>
+                <div className="shelf-resume-copy">
+                  <h2 title={continueReadingBook.title}>{continueReadingBook.title}</h2>
+                  <p className="shelf-resume-metadata" title={continueMetadata}>
+                    <span>{continueReadingBook.author || "作者未知"}</span>
+                    {continueChapterTitle && <><span aria-hidden="true"> · </span><span>{continueChapterTitle}</span></>}
+                    {continueDateLabel && <><span aria-hidden="true"> · </span><time dateTime={new Date(continueReadingBook.lastReadAt!).toISOString()}>{continueDateLabel}</time></>}
+                  </p>
+                  <div className="shelf-resume-progress">
+                    <div className="progress-track" role="progressbar" aria-label="阅读进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={continueReadingBook.progress}><span style={{ width: `${continueReadingBook.progress}%` }} /></div>
+                    <span>已读 {continueReadingBook.progress}%</span>
+                  </div>
                 </div>
-                <div className="reading-summary reading-footprint">
-                  <p className="eyebrow">阅读足迹</p>
-                  <dl className="reading-footprint-stats">
-                    {[
-                      { label: "今日阅读时长", value: todayReadingMinutes, unit: "分钟" },
-                      { label: "连续阅读天数", value: consecutiveReadingDays, unit: "天" },
-                      { label: "笔记数量", value: noteCount, unit: "条" },
-                    ].map(({ label, value, unit }) => <div key={label}><dt>{label}</dt><dd><strong>{value}</strong><span>{unit}</span></dd></div>)}
-                  </dl>
-                </div>
-              </section>
+                <button className="primary-button shelf-resume-button" onClick={() => openBook(continueReadingBook)}>继续阅读<ArrowUpRight size={17} aria-hidden="true" /></button>
+              </section>}
               <section className="shelf-section" aria-label="全部书籍">
-                <ShelfToolbar count={filteredBooks.length} search={searchQuery} preferences={shelfPreferences} onSearch={setSearchQuery} onPreferencesChange={setShelfPreferences} />
-                {books.length === 0 ? <div className="shelf-empty"><span className="empty-icon"><BookOpen size={27} /></span><h3>好故事，等你放上书架</h3><p>导入你的电子书，随时阅读、翻译和记录想法。</p><button className="primary-button" onClick={pickFile}><Upload size={16} />导入第一本书</button><small>支持 {supportedFormatLabel}</small></div> : <>
+                <ShelfToolbar count={filteredBooks.length} search={searchQuery} preferences={shelfPreferences} onPreferencesChange={setShelfPreferences} />
+                {books.length === 0 && !searchQuery.trim() ? <div className="shelf-empty"><span className="empty-icon"><BookOpen size={27} /></span><h3>好故事，等你放上书架</h3><p>导入你的电子书，随时阅读、翻译和记录想法。</p><button className="primary-button" onClick={pickFile}><Upload size={16} />导入第一本书</button><small>支持 {supportedFormatLabel}</small></div> : <>
                   {filteredBooks.length > 0 ? <div className={shelfPreferences.view === "grid" ? "library-book-grid" : "library-book-list"}>{filteredBooks.map((book) => (
                     <ShelfBookCard key={book.id} book={book} view={shelfPreferences.view} onOpen={() => openBook(book)} onRemove={() => deleteBook(book.id, book.title)} />
                   ))}
