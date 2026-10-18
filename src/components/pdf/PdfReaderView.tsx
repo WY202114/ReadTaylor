@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent } from "react";
-import { ArrowLeft, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, List, Minus, Pin, Plus, RotateCw, Search, Sun, Moon, X } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Columns2, List, Minus, Pin, Plus, RotateCw, Search, Sun, Moon, X } from "lucide-react";
 import type { Book } from "../../lib/books";
 import { PdfSession, type PdfOutlineItem } from "../../lib/pdf/session";
 import type { PdfPageAccess, PdfPosition, PdfZoom } from "../../lib/pdf/types";
@@ -48,6 +48,7 @@ export function PdfReaderView({ book, isDark, onToggleDark, onBack, onPositionCh
   const [rotation, setRotation] = useState(0);
   const [outline, setOutline] = useState<PdfOutlineItem[]>([]);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [splitView, setSplitView] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [match, setMatch] = useState({ current: 0, total: 0, state: 0 });
@@ -132,7 +133,7 @@ export function PdfReaderView({ book, isDark, onToggleDark, onBack, onPositionCh
   }, [page, searchOpen, outlineOpen, toolbar.pinned, toolbar.peeking, chromeFocused]);
 
   useEffect(() => {
-    const element = root.current;
+    const element = container.current;
     if (!element) return;
     let frame = 0;
     let delta = 0;
@@ -181,13 +182,14 @@ export function PdfReaderView({ book, isDark, onToggleDark, onBack, onPositionCh
         }} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setChromeFocused(false); }}>
       <header className="pdf-reader-header">
         <button onClick={back} aria-label="返回书架（Esc）" title="返回书架（Esc，先关闭搜索或弹层）"><ArrowLeft size={18} /></button>
-        <div className="pdf-reader-title"><h1 title={book.title}>{book.title}</h1><span>PDF 原版阅读 · 页面保持原色</span></div>
+        <div className="pdf-reader-title"><h1 title={book.title}>{book.title}</h1><span>PDF {splitView ? "对照布局" : "原版阅读"} · 页面保持原色</span></div>
         {!toolbar.pinned && <button onClick={() => setPinned(true)} aria-label="固定显示工具栏（H）" title="固定显示工具栏（H）"><Pin size={16} /><span>固定显示</span></button>}
         <button onClick={onToggleDark} aria-label={isDark ? "切换日间模式" : "切换夜间模式"} title={isDark ? "切换日间模式" : "切换夜间模式"}>{isDark ? <Sun size={18} /> : <Moon size={18} />}</button>
         <button onClick={() => setPinned(false)} aria-label="隐藏工具栏（H）" title="隐藏工具栏（H）" aria-keyshortcuts="H"><ChevronUp size={17} /><span>隐藏</span></button>
       </header>
       <div className="pdf-toolbar" role="toolbar" aria-label="PDF 阅读工具">
         <button disabled={!ready} onClick={() => setOutlineOpen(!outlineOpen)} aria-label="文档目录" title="文档目录（Esc 关闭）" aria-expanded={outlineOpen}><List size={17} /><span>目录</span></button>
+        <button onClick={() => setSplitView(!splitView)} aria-label="对照布局" title={splitView ? "返回单栏原版阅读" : "显示左右对照布局（译文暂为空）"} aria-pressed={splitView} aria-controls="pdf-reading-panes"><Columns2 size={17} /><span>对照布局</span></button>
         <div className="pdf-control-group">
           <button disabled={!ready || page <= 1} onClick={() => void session.current?.goToPage(page - 1)} aria-label="上一页" title="上一页（← / PageUp）" aria-keyshortcuts="ArrowLeft PageUp"><ChevronLeft size={17} /></button>
           <form onSubmit={jump}><label className="pdf-sr-only" htmlFor="pdf-page">物理页码</label><input id="pdf-page" title="输入物理页码后按 Enter 跳转" type="number" min="1" max={count} value={pageInput} onChange={(event) => setPageInput(event.target.value)} disabled={!ready} /><span>/ {count}</span></form>
@@ -224,10 +226,25 @@ export function PdfReaderView({ book, isDark, onToggleDark, onBack, onPositionCh
           <header><strong>文档目录</strong><button onClick={() => { setOutlineOpen(false); returnToBook(); }} aria-label="关闭目录" title="关闭目录（Esc）"><X size={17} /></button></header>
           {outline.length ? <nav><Outline items={outline} onChoose={(item) => { session.current?.navigateOutline(item); if (window.innerWidth < 760) setOutlineOpen(false); }} /></nav> : <p>这份 PDF 没有提供目录。可以通过物理页码跳转。</p>}
         </aside>}
-        <div className="pdf-page-stage">
-          {!ready && !error && <p className="pdf-loading" role="status">正在打开原 PDF…</p>}
-          <div ref={container} className="pdf-viewport" data-fit-width={zoom === "page-width" || undefined} tabIndex={0} aria-label="PDF 原始页面"
-            onPointerDown={touchStart} onPointerUp={touchEnd} onPointerCancel={() => { touch.current = undefined; }}><div ref={pages} className="pdfViewer" /></div>
+        <div id="pdf-reading-panes" className="pdf-reading-panes" data-layout={splitView ? "split" : "original"}>
+          <section className="pdf-original-pane" aria-label="原 PDF">
+            {splitView && <header className="pdf-pane-heading"><h2>原 PDF</h2><span>页面保持原色</span></header>}
+            <div className="pdf-page-stage">
+              {!ready && !error && <p className="pdf-loading" role="status">正在打开原 PDF…</p>}
+              <div ref={container} className="pdf-viewport" data-fit-width={zoom === "page-width" || undefined} tabIndex={0} aria-label="PDF 原始页面"
+                onPointerDown={touchStart} onPointerUp={touchEnd} onPointerCancel={() => { touch.current = undefined; }}><div ref={pages} className="pdfViewer" /></div>
+            </div>
+          </section>
+          {splitView && <section className="pdf-translation-pane" aria-labelledby="pdf-translation-title">
+            <header className="pdf-pane-heading"><h2 id="pdf-translation-title">译文</h2><span>尚未翻译</span></header>
+            <div className="pdf-translation-content" tabIndex={0} aria-label="译文占位">
+              <div className="pdf-translation-page">
+                <BookOpen size={28} strokeWidth={1.25} aria-hidden="true" />
+                <h3>译文将在这里显示</h3>
+                <p>当前仅提供对照布局，尚未生成译文。</p>
+              </div>
+            </div>
+          </section>}
         </div>
       </div>
       {ready && !toolsVisible && <span className="pdf-floating-page" aria-label={`第 ${page} 页，共 ${count} 页`}>{page} / {count}</span>}
