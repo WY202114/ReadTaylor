@@ -26,4 +26,12 @@
 .translation-clear-confirm { border-top:1px solid var(--border); padding-top:12px; margin-top:16px; font-size:12px; line-height:1.9; }
 .translation-clear-confirm button+button { margin-left:10px; }
 .translation-settings-feedback { margin:14px 0 0; font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.translation-key-storage label { display:flex; flex-direction:row; align-items:center; gap:8px; }
+.translation-key-storage input[type=checkbox] { width:15px; height:15px; margin:0; accent-color:var(--accent); }
+.translation-storage-warning { margin:8px 0; font-size:11px; line-height:1.8; color:var(--muted-foreground); }
+.translation-connection-state { margin:12px 0; font-size:12px; line-height:1.8; }
+.translation-connection-state small { display:block; }
+.translation-destination p { margin:0; }
+.translation-destination p+p { margin-top:8px; }
+.translation-actions { display:flex; flex-wrap:wrap; gap:10px; }
 @media(max-width:600px) { .translation-settings { padding:18px 14px; } .translation-settings-grid { grid-template-columns:minmax(0,1fr); gap:16px; } .translation-key-field>div { flex-wrap:wrap; } .translation-key-field>div input { flex-basis:100%; } }
