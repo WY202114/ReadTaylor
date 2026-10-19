@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>安全录入 API Key</title>
+  <link rel="stylesheet" href="key-entry.css">
+</head>
+<body>
+  <h1>录入 API Key</h1>
+  <p id="destination">正在确认接口…</p>
+  <label for="api-key">API Key</label>
+  <input id="api-key" type="password" autocomplete="off" spellcheck="false" autofocus aria-describedby="key-help">
+  <p id="key-help">由本机系统安全存储加密保存。主阅读页面不会收到 Key，也不会回填已保存的 Key。</p>
+  <p id="error" role="alert"></p>
+  <footer><button id="cancel" type="button">取消</button><button id="save" type="button">加密保存</button></footer>
+</body>
+</html>

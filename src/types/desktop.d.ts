@@ -1,5 +1,7 @@
 export {};
 
+import type { TranslationConfig, TranslationSettingsData, TranslationSettingsSnapshot, TranslationIPCResult, TranslationBatch, TranslationBatchPreview, TranslationBatchResult } from "../lib/desktopTranslation";
+
 declare global {
   interface DesktopBookReference {
     token: string;
@@ -42,6 +44,12 @@ declare global {
     prepareBook(token: string, jobId: string): Promise<DesktopPreparedBook>;
     getToolchain(): Promise<DesktopToolchainStatus>;
     openCalibreHelp(): Promise<boolean>;
+    getTranslationSettings(): Promise<TranslationIPCResult<TranslationSettingsData>>;
+    saveTranslationSettings(config: TranslationConfig): Promise<TranslationIPCResult<TranslationSettingsSnapshot>>;
+    editTranslationKey(config: TranslationConfig): Promise<TranslationIPCResult<TranslationSettingsSnapshot & { keySaved: boolean }>>;
+    clearTranslationSettings(): Promise<TranslationIPCResult<TranslationSettingsSnapshot>>;
+    previewTranslationBatch(batch: TranslationBatch): Promise<TranslationIPCResult<TranslationBatchPreview>>;
+    sendTranslationBatch(previewId: string): Promise<TranslationIPCResult<TranslationBatchResult>>;
     onConversionProgress(
       callback: (update: DesktopConversionProgress) => void
     ): () => void;

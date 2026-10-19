@@ -4,6 +4,7 @@ import { ReaderView } from "./components/ReaderView";
 import { ShelfBookCard } from "./components/ShelfBookCard";
 import { ShelfHeader } from "./components/ShelfHeader";
 import { LibraryNavigation } from "./components/LibraryNavigation";
+import { TranslationSettings } from "./components/TranslationSettings";
 import { loadBookshelfPreferences, saveBookshelfPreferences } from "./components/bookshelfPreferences";
 import {
   BookOpen,
@@ -417,7 +418,8 @@ export default function App() {
                 { label: "夜间模式", value: isDark ? "已开启" : "已关闭", action: () => setIsDark((value) => !value) },
                 { label: "关于应用", value: `v${APP_VERSION}`, action: undefined },
               ].map((item) => <button key={item.label} onClick={item.action} disabled={!item.action}><span>{item.label}</span><span>{item.value}{item.action && <ArrowUpRight size={16} />}</span></button>)}</div>
-              <p className="profile-privacy"><ShieldCheck size={19} />ReadTaylor 不提供书籍内容。所有文件仅在本机读取、转换与保存，不会上传到服务器。</p>
+              <TranslationSettings />
+              <p className="profile-privacy"><ShieldCheck size={19} />ReadTaylor 不提供书籍内容。文件在本机读取、转换与保存；主动使用翻译时，所选文本会发送到相应的翻译服务。</p>
             </motion.div>
           )}
         </AnimatePresence>

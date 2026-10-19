@@ -1,0 +1,9 @@
+[
+  { "id": "deepseek", "label": "DeepSeek", "endpoint": "https://api.deepseek.com", "model": "deepseek-flash", "docs": "https://api-docs.deepseek.com/", "note": "官方示例使用 deepseek-flash；模型名称可能更新。" },
+  { "id": "qwen", "label": "通义千问", "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus", "docs": "https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope", "note": "北京地域的通用域名仍可使用；官方建议改为业务空间专属域名，Key 必须与地域一致。" },
+  { "id": "kimi", "label": "Kimi（月之暗面）", "endpoint": "https://api.moonshot.cn/v1", "model": "kimi-k3", "docs": "https://platform.kimi.com/docs/get-api-key", "note": "K3、K2.7 Code、K2.6 的温度由模型固定，请留空；接口会省略此参数。" },
+  { "id": "zhipu", "label": "智谱", "endpoint": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-5.3", "docs": "https://docs.bigmodel.cn/cn/guide/start/quick-start", "note": "使用模型标准 API 的 Key；Coding Plan 等套餐可能使用不同端点与 Key。" },
+  { "id": "openrouter", "label": "OpenRouter", "endpoint": "https://openrouter.ai/api/v1", "model": "~openai/gpt-sol-latest", "docs": "https://openrouter.ai/docs/quickstart", "note": "官方快速开始使用此模型别名；可改为账号有权限调用的其他模型，JSON 能力取决于所选模型。" },
+  { "id": "ollama", "label": "本地 Ollama", "endpoint": "http://localhost:11434/v1", "model": "gpt-oss:20b", "docs": "https://docs.ollama.com/api/openai-compatibility", "note": "先在本机安装并拉取模型。仅本机接口允许 Key 为空；本地预设不支持云模型标签。" },
+  { "id": "custom", "label": "自定义", "endpoint": "", "model": "", "docs": "", "note": "填写 OpenAI 兼容的基础地址或完整 /chat/completions 地址，并向服务商核对模型名称。" }
+]

@@ -1,0 +1,8 @@
+:root { color-scheme:light; font:13px/1.6 "Segoe UI","Microsoft YaHei",sans-serif; color:#302d29; background:#f7f6f2; }
+body { margin:0; padding:24px; } h1 { font-size:20px; font-weight:500; margin:0 0 8px; }
+p { margin:8px 0; color:#77716a; overflow-wrap:anywhere; } label { display:block; margin-top:16px; }
+input { box-sizing:border-box; width:100%; padding:8px 10px; border:1px solid #e4e0d8; border-radius:6px; background:#fffefa; color:inherit; font:inherit; }
+input:focus-visible,button:focus-visible { outline:2px solid #a16642; outline-offset:2px; }
+#key-help { font-size:11px; } #error { color:#a23b2b; min-height:20px; font-size:12px; }
+footer { display:flex; gap:10px; justify-content:flex-end; } button { padding:7px 14px; border:1px solid #e4e0d8; border-radius:6px; background:#fffefa; color:inherit; cursor:pointer; } #save { background:#a16642; color:#fffaf5; border-color:#a16642; }
+@media(prefers-color-scheme:dark) { :root { color-scheme:dark; background:#22211f; color:#eee9e1; } p { color:#b2a99e; } input,button { background:#2a2825; border-color:#423c34; } #save { background:#d7a581; border-color:#d7a581; color:#28231f; } }

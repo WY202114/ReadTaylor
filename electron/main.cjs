@@ -1,8 +1,10 @@
-const { app, BrowserWindow, dialog, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, session, shell, safeStorage } = require("electron");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");
+const { createTranslationStore } = require("./translation/store.cjs");
+const { installTranslationIPC } = require("./translation/ipc.cjs");
 const {
   DIRECT_EXTENSIONS,
   convertToEpub,
@@ -222,6 +224,10 @@ async function prepareSelectedBook(token, jobId) {
 }
 
 function installIPCHandlers() {
+  installTranslationIPC({
+    ipcMain, BrowserWindow, dialog, requireTrustedSender, getMainWindow: () => mainWindow,
+    store: createTranslationStore({ filePath: path.join(app.getPath("userData"), "translation-config.v1.json"), safeStorage }),
+  });
   ipcMain.handle("readtaylor:pick-books", async (event) => {
     requireTrustedSender(event);
     const result = await dialog.showOpenDialog(mainWindow, {
