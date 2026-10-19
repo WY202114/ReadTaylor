@@ -65,14 +65,19 @@ function createTranslationStore({ filePath, safeStorage, platform = process.plat
     commit({ ...current, profiles: { ...current.profiles, [id]: { config: entry.config, keys: { ...entry.keys, [origin]: encrypted } } } });
     return snapshot();
   }
-  function resolve(id = load().activeProviderId) {
+  function inspect(id = load().activeProviderId) {
     const entry = entryFor(id);
     const config = normalizeConfig(entry.config);
     const encrypted = entry.keys[endpointInfo(config.endpoint).origin];
     if (!encrypted && requiresKey(config)) throw new TranslationError("KEY_REQUIRED", "尚未配置 API Key，请到翻译设置中录入后再发送。");
+    if (encrypted) assertEncryption();
+    return config;
+  }
+  function resolve(id = load().activeProviderId) {
+    const config = inspect(id);
+    const encrypted = entryFor(id).keys[endpointInfo(config.endpoint).origin];
     let apiKey = "";
     if (encrypted) {
-      assertEncryption();
       try { apiKey = safeStorage.decryptString(Buffer.from(encrypted, "base64")); } catch { throw new TranslationError("ENCRYPTION", "无法解密已保存的 Key，请重新录入 API Key。"); }
     }
     return { ...config, apiKey };
@@ -84,6 +89,6 @@ function createTranslationStore({ filePath, safeStorage, platform = process.plat
     state = undefined;
     return snapshot();
   }
-  return { snapshot, save, setKey, resolve, fingerprint, clear };
+  return { snapshot, save, setKey, inspect, resolve, fingerprint, clear };
 }
 module.exports = { createTranslationStore };

@@ -275,3 +275,19 @@ test("isolated Key window lifecycle saves the Key only from its own top frame an
   assert.match(fs.readFileSync(popup.file, "utf8"), /connect-src 'none'/);
   assert.match(fs.readFileSync(popup.file, "utf8"), /script-src 'none'/);
 });
+
+test("preview and cancelled sends never decrypt the Key; only an approved send decrypts it", async (t) => {
+  const { store, safeStorage } = storeFixture(t);
+  const decrypt = safeStorage.decryptString;
+  let decryptions = 0, approve = false;
+  safeStorage.decryptString = (...args) => { decryptions++; return decrypt(...args); };
+  const mock = createMockTranslationFetch([{ body: mockCompletion(translations) }]);
+  const service = createTranslationService({ store, confirmSend: async () => { assert.equal(decryptions, 0); return approve; }, providerFactory: () => new OpenAICompatibleProvider({ fetchImpl: mock.fetchImpl }) });
+  const first = service.preview({ segments });
+  assert.equal(decryptions, 0);
+  await assert.rejects(service.send(first.previewId), (error) => error.code === "CANCELLED");
+  assert.equal(decryptions, 0);
+  approve = true;
+  await service.send(service.preview({ segments }).previewId);
+  assert.equal(decryptions, 1);
+});

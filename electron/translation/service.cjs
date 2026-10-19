@@ -7,7 +7,7 @@ function createTranslationService({ store, confirmSend, providerFactory = () => 
   const active = new Set();
   function preview({ providerId, segments } = {}) {
     const batch = validateSegments(segments);
-    const config = store.resolve(providerId);
+    const config = store.inspect(providerId);
     const info = endpointInfo(config.endpoint);
     for (const [id, item] of previews) if (now() - item.createdAt > 5 * 60_000) previews.delete(id);
     if (previews.size >= 20) throw new TranslationError("BUSY", "待确认的翻译批次过多，请完成或取消后重试。");
@@ -21,17 +21,19 @@ function createTranslationService({ store, confirmSend, providerFactory = () => 
     previews.delete(previewId);
     if (!prepared || now() - prepared.createdAt > 5 * 60_000) throw new TranslationError("PREVIEW_EXPIRED", "发送预览已过期或已使用，请重新预览本批内容。");
     if (store.fingerprint(prepared.providerId) !== prepared.fingerprint) throw new TranslationError("CONFIG_CHANGED", "翻译设置已更改，请重新预览并确认实际接口后再发送。");
-    const config = store.resolve(prepared.providerId);
+    const config = store.inspect(prepared.providerId);
     const info = endpointInfo(config.endpoint);
     const { characterCount } = validateSegments(prepared.segments);
     const controller = new AbortController();
+    let requestConfig;
     active.add(controller);
     try {
       const approved = await confirmSend({ domain: info.domain, endpoint: info.requestURL, local: info.local, model: config.model, targetLanguage: LANGUAGES[config.targetLanguage], characterCount, notice: destinationNotice(info) });
       if (!approved || controller.signal.aborted) throw new TranslationError("CANCELLED", "本批翻译已取消，未发送新的请求。");
       if (store.fingerprint(prepared.providerId) !== prepared.fingerprint) throw new TranslationError("CONFIG_CHANGED", "确认期间翻译设置已更改，请重新预览后发送。");
-      return await providerFactory(config.protocol).translateBatch(config, prepared.segments, { signal: controller.signal });
-    } finally { config.apiKey = ""; active.delete(controller); }
+      requestConfig = store.resolve(prepared.providerId);
+      return await providerFactory(config.protocol).translateBatch(requestConfig, prepared.segments, { signal: controller.signal });
+    } finally { if (requestConfig) requestConfig.apiKey = ""; active.delete(controller); }
   }
   function invalidate() { previews.clear(); }
   function cancelAll() { invalidate(); for (const controller of active) controller.abort(); }
