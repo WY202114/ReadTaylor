@@ -65,6 +65,21 @@ export function PdfReaderView({ book, isDark, onToggleDark, onBack, onPositionCh
   }, []);
   useLayoutEffect(() => { if (chrome.current) chrome.current.inert = !toolsVisible; }, [toolsVisible]);
 
+  // Scroll activity only changes the thumb's appearance; PdfSession owns scrolling.
+  useEffect(() => {
+    const cleanups = Array.from(root.current?.querySelectorAll<HTMLElement>(".pdf-viewport,.pdf-translation-content") || []).map((element) => {
+      let timer: number | undefined;
+      const showThumb = () => {
+        element.dataset.scrolling = "true";
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => { delete element.dataset.scrolling; }, 800);
+      };
+      element.addEventListener("scroll", showThumb, { passive: true });
+      return () => { element.removeEventListener("scroll", showThumb); window.clearTimeout(timer); delete element.dataset.scrolling; };
+    });
+    return () => cleanups.forEach((cleanup) => cleanup());
+  }, [splitView]);
+
   const returnToBook = () => container.current?.focus({ preventScroll: true });
   const setPinned = (value: boolean) => {
     if (!value) {
@@ -216,7 +231,7 @@ export function PdfReaderView({ book, isDark, onToggleDark, onBack, onPositionCh
         <button type="button" onClick={closeSearch} aria-label="关闭搜索" title="关闭搜索（Esc）"><X size={16} /></button>
       </form>}
       </div>
-      {!toolsVisible && <div className="pdf-top-edge"><button className="pdf-toolbar-reveal" onClick={() => setPinned(true)} aria-label="显示并固定工具栏（H）" title="显示并固定工具栏（H）" aria-keyshortcuts="H" aria-controls="pdf-reader-controls" aria-expanded="false"><ChevronDown size={15} /></button></div>}
+      {!toolsVisible && <div className="pdf-top-edge"><button className="pdf-toolbar-reveal" onClick={() => setPinned(true)} aria-label="显示并固定工具栏（H）" title="显示并固定工具栏（H）" aria-keyshortcuts="H" aria-controls="pdf-reader-controls" aria-expanded="false"><ChevronDown size={12} strokeWidth={1.25} /></button></div>}
       <p className="pdf-toolbar-hint" data-show={toolbar.hint && !toolsVisible || undefined} role="status" aria-hidden={!toolbar.hint || toolsVisible}>移到顶部或按 H 显示工具栏</p>
       {storageError && <p className="pdf-notice" role="alert">本机存储空间不足，阅读位置未能保存。请释放空间后重试。</p>}
       {noText && <p className="pdf-notice" role="status">此页没有可提取的文字层，仍可原版阅读；当前不提供 OCR。</p>}
@@ -228,7 +243,7 @@ export function PdfReaderView({ book, isDark, onToggleDark, onBack, onPositionCh
         </aside>}
         <div id="pdf-reading-panes" className="pdf-reading-panes" data-layout={splitView ? "split" : "original"}>
           <section className="pdf-original-pane" aria-label="原 PDF">
-            {splitView && <header className="pdf-pane-heading"><h2>原 PDF</h2><span>页面保持原色</span></header>}
+            {splitView && <header className="pdf-pane-heading"><div className="pdf-pane-label"><h2>原 PDF</h2><span className="pdf-pane-note" title="原 PDF 页面保持原色，夜间模式也不改变页面颜色。"><span className="pdf-pane-note-text">页面保持原色</span><span className="pdf-pane-note-icon" aria-label="页面保持原色">ⓘ</span></span></div></header>}
             <div className="pdf-page-stage">
               {!ready && !error && <p className="pdf-loading" role="status">正在打开原 PDF…</p>}
               <div ref={container} className="pdf-viewport" data-fit-width={zoom === "page-width" || undefined} tabIndex={0} aria-label="PDF 原始页面"
